@@ -43,8 +43,7 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 │   ├── query/              KNN、半径、统计查询（文件名带作者前缀）
 │   └── data/               数据导入脚本
 └── docs/
-    ├── 00_协作规范.md      ★ 开工前必读
-    └── api-contract.md     ★ 接口契约，仓库内唯一真源
+    └── 00_协作规范.md      ★ 开工前必读
 ```
 
 ---
@@ -87,6 +86,16 @@ uvicorn app.main:app --reload --port 8000
 
 打开 http://127.0.0.1:8000/docs 看 OpenAPI。
 
+**先自检再写代码**——确认自己本机的 `.env` 与数据库是通的：
+
+```bash
+cd backend
+.venv\Scripts\python.exe smoke_test.py
+```
+
+脚本自带服务（临时占用 8123 端口），把 9 个接口挨个实打一遍，
+包括两项**应该返回 501** 的占位接口。全 OK 才动手。
+
 > Windows 控制台是 GBK。用 psql 跑含中文的 SQL 时先 `chcp 65001`，
 > 并且**必须用 `-f 文件` 而不是 `-c "..."`**，否则中文会被 GBK 破坏，
 > 报 `invalid byte sequence for encoding "UTF8"`。
@@ -111,7 +120,7 @@ npm run dev
 - 已知冲突点的处理办法
 - 给各组员 AI agent 的提示词约束段
 
-接口字段以 [`docs/api-contract.md`](docs/api-contract.md) 为准。
+接口路径与字段以《V1 前后端开发任务执行书》**§4 API Contract** 为准（四人各持一份正文）。
 **契约变更必须全组确认，个人 agent 不得自行决定。**
 
 提交信息用 `feat: / fix: / docs: `，别写"更新"、"改了"。
