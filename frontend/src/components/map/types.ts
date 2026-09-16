@@ -1,0 +1,61 @@
+import type { Feature, MultiPolygon, Point, Polygon } from 'geojson'
+
+/** 校区核验状态，契约冻结：CONFIRMED=已核验，CANDIDATE=候选。 */
+export type CampusStatus = 'CONFIRMED' | 'CANDIDATE'
+
+/** /api/map/campuses 的 feature properties（契约 §4.6）。 */
+export interface CampusProps {
+  campus_id: number
+  school_id: number
+  school_name: string
+  campus_name: string
+  verify_status: CampusStatus
+}
+
+export type CampusFeature = Feature<Point, CampusProps>
+
+/** /api/map/regions 的 feature properties（契约 §4.7）。 */
+export interface RegionProps {
+  adcode: string
+  name: string
+  level: string
+  parent_adcode: string
+  children_num: number
+}
+
+export type RegionFeature = Feature<Polygon | MultiPolygon, RegionProps>
+
+/** /api/spatial/nearby 的 item（契约 §4.8）。 */
+export interface NearbyItem {
+  school_id: number
+  school_name: string
+  campus_id: number
+  campus_name: string
+  verify_status: CampusStatus
+  distance_km: number
+}
+
+export interface NearbyResponse {
+  items: NearbyItem[]
+  warnings: string[]
+}
+
+/** /api/spatial/within 的 item（契约 §4.9）。 */
+export interface WithinItem {
+  school_id: number
+  school_name: string
+  campus_id: number
+  campus_name: string
+  verify_status: CampusStatus
+  lon: number
+  lat: number
+}
+
+export interface WithinResponse {
+  items: WithinItem[]
+  total: number
+  warnings: string[]
+}
+
+/** 地图交互模式。 */
+export type DrawMode = 'browse' | 'point' | 'rect' | 'polygon'

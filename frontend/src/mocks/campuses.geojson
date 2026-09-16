@@ -1,0 +1,55 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [116.3103, 39.9928] },
+      "properties": { "campus_id": 1, "school_id": 1, "school_name": "北京大学", "campus_name": "校本部", "verify_status": "CONFIRMED" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [116.3266, 39.999] },
+      "properties": { "campus_id": 2, "school_id": 2, "school_name": "清华大学", "campus_name": "校本部", "verify_status": "CONFIRMED" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [114.356, 30.5365] },
+      "properties": { "campus_id": 3, "school_id": 3, "school_name": "武汉大学", "campus_name": "文理学部", "verify_status": "CONFIRMED" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [120.0838, 30.3018] },
+      "properties": { "campus_id": 4, "school_id": 4, "school_name": "浙江大学", "campus_name": "紫金港校区", "verify_status": "CONFIRMED" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [114.362, 30.53] },
+      "properties": { "campus_id": 5, "school_id": 3, "school_name": "武汉大学", "campus_name": "信息学部", "verify_status": "CANDIDATE" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [114.416, 30.51] },
+      "properties": { "campus_id": 6, "school_id": 5, "school_name": "华中科技大学", "campus_name": "主校区", "verify_status": "CANDIDATE" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [114.37, 30.52] },
+      "properties": { "campus_id": 7, "school_id": 6, "school_name": "华中师范大学", "campus_name": "主校区", "verify_status": "CANDIDATE" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [113.3, 23.1] },
+      "properties": { "campus_id": 8, "school_id": 7, "school_name": "中山大学", "campus_name": "广州校区南校园", "verify_status": "CANDIDATE" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [121.49, 31.297] },
+      "properties": { "campus_id": 9, "school_id": 8, "school_name": "复旦大学", "campus_name": "邯郸校区", "verify_status": "CANDIDATE" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [104.08, 30.63] },
+      "properties": { "campus_id": 10, "school_id": 9, "school_name": "四川大学", "campus_name": "望江校区", "verify_status": "CANDIDATE" }
+    }
+  ]
+}
