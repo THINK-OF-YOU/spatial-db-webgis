@@ -1,0 +1,18 @@
+# 统一换行符——四人 Windows/Mac 混用，不统一的话每个文件都会因 CRLF 产生假 diff
+* text=auto eol=lf
+
+# 二进制：不做任何换行转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.docx binary
+*.xlsx binary
+*.zip  binary
+*.gz   binary
+
+# 锁文件不参与 diff，只看是否有变更
+package-lock.json -diff
+pnpm-lock.yaml    -diff
