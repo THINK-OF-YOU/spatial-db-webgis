@@ -1,0 +1,37 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[115.4, 39.4], [117.6, 39.4], [117.6, 41.1], [115.4, 41.1], [115.4, 39.4]]]
+      },
+      "properties": { "adcode": "110000", "name": "北京市", "level": "province", "parent_adcode": "100000", "children_num": 16 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[108.3, 29.0], [116.1, 29.0], [116.1, 33.3], [108.3, 33.3], [108.3, 29.0]]]
+      },
+      "properties": { "adcode": "420000", "name": "湖北省", "level": "province", "parent_adcode": "100000", "children_num": 17 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[109.4, 20.1], [117.2, 20.1], [117.2, 25.5], [109.4, 25.5], [109.4, 20.1]]]
+      },
+      "properties": { "adcode": "440000", "name": "广东省", "level": "province", "parent_adcode": "100000", "children_num": 21 }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.0, 27.0], [123.0, 27.0], [123.0, 31.3], [118.0, 31.3], [118.0, 27.0]]]
+      },
+      "properties": { "adcode": "330000", "name": "浙江省", "level": "province", "parent_adcode": "100000", "children_num": 11 }
+    }
+  ]
+}
