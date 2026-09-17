@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import admissions, colleges, map, meta, search, spatial
+from app.api import admissions, colleges, majors, map, meta, search, spatial
 from app.config import settings
 from app.db.pool import close_pool, get_cursor, init_pool
 
@@ -55,14 +55,17 @@ app.add_middleware(
 )
 
 # ── 路由注册 ────────────────────────────────────────────────────────
-# 一次注册好全部 10 个接口，谁的文件谁实现，不要来这里加路由。
+# 谁的文件谁实现，不要来这里加路由。
 # API 10（周边交通）挂在 colleges.router 上，所以这里没有新增一行。
+# API 11/12/13（专业）是 2026-09-17 数据库恢复专业语义链之后新增的，
+# 单独一个 majors.router —— 原计划 10 个接口，现在是 13 个。
 API_PREFIX = "/api"
 
 app.include_router(colleges.router, prefix=API_PREFIX)   # 莫炜钧  1, 2, 10
 app.include_router(map.router, prefix=API_PREFIX)        # 莫炜钧  5, 6
 app.include_router(spatial.router, prefix=API_PREFIX)    # 莫炜钧  7, 8
 app.include_router(search.router, prefix=API_PREFIX)     # 莫炜钧  9（总集成）
+app.include_router(majors.router, prefix=API_PREFIX)     # 莫炜钧  11, 12, 13
 app.include_router(meta.router, prefix=API_PREFIX)       # 倪嵩    4
 app.include_router(admissions.router, prefix=API_PREFIX) # 倪嵩    3
 

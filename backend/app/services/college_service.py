@@ -111,17 +111,37 @@ def list_campuses_of(school_id: int) -> list[dict]:
 def college_availability(school_id: int) -> dict:
     """data_availability —— 告诉前端这个学校哪些数据真的能拿到。
 
-    字段与契约 §4.3 的示例逐字对齐，**只有三个**：
-    school_admission / campus / major_mapping。
+    ⚠️ **2026-09-17 变更：从三个键变成四个键。**
+    契约 §4.3 的示例只有 school_admission / campus / major_mapping，
+    这里多了 `major_admission`。属于约定的契约变更（先实现、执行书后补），
+    已同步给前端，见 docs/02_专业API对接文档.md。
 
-    专业语义链为空（admission_major_expression / admission_major_group /
-    expr_major_map / group_expr 都是 0 行），所以 major_mapping 恒为 false。
-    见协作规范 §1.3 与勘察报告 §2.1。
+    为什么非拆不可——专业是**两层语义**（详见 services/major_service.py 开头）：
 
-    这里**刻意不返回 enrollment_plan**：附录 B 第三条要求「不要把 EnrollmentPlan
-    或 MajorAdmission 引入核心页面」，数据现状表也写「EnrollmentPlan 不作为 V1
-    主列表」，而 §4.3 的字段清单里没有它。原先返回了一个 enrollment_plan 布尔值，
-    2026-09-17 移除——它既不在契约里，又把 V1 明确不用的数据源暴露给了前端。
+        来源招生专业表达  98.62% 的事实有
+        标准专业(Tier 1)  37.80% 的事实有
+
+    全库 2,952 所高校里 2,747 所有专业事实，但只有 2,586 所有至少一条 Tier 1
+    标准映射。如果只留一个 `major_mapping` 表示「有没有专业数据」，那么
+    major_mapping=false 的学校在前端会被整个藏掉专业视图——**可它明明有专业，
+    只是来源专业名没被规则 v1 精确归一**。这正是「未建立标准映射 ≠ 没有该专业」
+    那个坑。拆成两个键，前端才能说清：
+
+        有 120 条专业录取记录，其中 45 条已归入标准专业
+
+    两个键的分工：
+        major_admission  该校有没有**专业录取事实**（决定专业视图显不显示）
+        major_mapping    该校有没有**已建立标准映射**的事实（决定能不能按
+                         标准专业筛，以及要不要给覆盖警告）
+
+    `enrollment_plan` 依旧**刻意不返回**：附录 B 第三条要求「不要把 EnrollmentPlan
+    或 MajorAdmission 引入核心页面」，且 §4.3 字段清单里没有它。原先返回过一个
+    enrollment_plan 布尔值，2026-09-17 移除。
+
+    （注：附录 B 第三条同时点名了 MajorAdmission，那是专业语义链入库**之前**定的
+    规矩——当时该表没有任何专业数据。2026-09-17 专业接口经**全组确定**为新增范围，
+    该限制对专业接口不再适用；但**核心页面**（API 1 / 2 / 9）仍然不引入专业数据，
+    这里只多返回两个布尔值，不夹带任何专业记录。）
     """
     with get_cursor() as cur:
         cur.execute(
@@ -131,11 +151,17 @@ def college_availability(school_id: int) -> dict:
                       where school_id = %(sid)s and geom is not null) as campus,
               exists(select 1 from school_unit u
                       join school_admission a on a.unit_id = u.unit_id
-                     where u.school_id = %(sid)s)                    as school_admission
+                     where u.school_id = %(sid)s)                    as school_admission,
+              exists(select 1 from school_unit u
+                      join major_admission ma on ma.unit_id = u.unit_id
+                     where u.school_id = %(sid)s)                    as major_admission,
+              exists(select 1 from school_unit u
+                      join major_admission ma on ma.unit_id = u.unit_id
+                      join expr_major_map m on m.expr_id = ma.expr_id
+                     where u.school_id = %(sid)s)                    as major_mapping
             """,
             {"sid": school_id},
         )
         row = dict(cur.fetchone())
 
-    row["major_mapping"] = False  # 专业语义链为空，V1 不提供
     return row

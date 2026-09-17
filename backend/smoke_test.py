@@ -19,6 +19,7 @@ import json
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import uvicorn
@@ -56,7 +57,12 @@ def call(method: str, path: str, body: dict | None = None):
     """发一个请求，返回 (status, payload)。HTTP 错误也当正常返回处理。"""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
+    # 查询串里有中文（如 q=计算机）时必须百分号编码：urllib 的请求行只能是 ASCII，
+    # 否则 urlopen 直接抛 UnicodeEncodeError（不是 HTTP 错误，是发送前就炸）。
+    # capture_samples.py 一直这么做；这里原先漏了，因为以前没有一个测试往 URL
+    # 里放中文，2026-09-17 加专业接口搜索样例时才暴露出来。
+    url = BASE + urllib.parse.quote(path, safe="/?&=%")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return resp.status, json.loads(resp.read().decode())
@@ -171,9 +177,12 @@ def main() -> int:
     )
     if isinstance(det, dict):
         avail = det["data"].get("data_availability") or {}
+        # 2026-09-17：从三个键变成四个键。专业语义链入库后必须把「有专业事实」
+        # 与「有标准映射」分开——只留 major_mapping 的话，有专业但没映射的学校
+        # 会在前端被整个藏掉专业视图。enrollment_plan 仍然不许回来。
         expect_true(
-            "data_availability 只有契约 §4.3 的三个键，不夹带 enrollment_plan",
-            set(avail) == {"school_admission", "campus", "major_mapping"},
+            "data_availability 是四个键（新增 major_admission），仍不夹带 enrollment_plan",
+            set(avail) == {"school_admission", "campus", "major_admission", "major_mapping"},
             f"实际键={sorted(avail)}",
         )
         cps = det["data"].get("campuses") or []
@@ -575,6 +584,276 @@ def main() -> int:
         and not ((no_station.get("items") if isinstance(no_station, dict) else None) or []),
         "两种情况 items 都是空数组",
     )
+
+    print()
+    print("=" * 68)
+    print("莫炜钧：11 高校专业 / 12 标准专业目录 / 13 按专业反查高校")
+    print("=" * 68)
+
+    # 三所/三个都是照库里实测挑的（2026-09-17），不是随手写的：
+    #   5334 四川师范大学      5,841 条专业事实，1,430 已映射 / 4,411 未映射
+    #   3877 西交利物浦大学      638 条专业事实，**零条** Tier 1 映射
+    #   2294 计算机科学与技术    778 所高校招，用于反查
+    MIXED, NO_MAPPING, STD_MAJOR, REV_TOTAL = 5334, 3877, 2294, 778
+
+    # 抄自 warnings.py。**故意不 import**——常量被改错时测试要跟着红，
+    # import 进来就等于没测（和上面 CONTRACT_MODES 同一个理由）。
+    COVERAGE_WARN = (
+        "按标准专业筛选仅覆盖已建立精确映射的录取记录，未建立映射不代表该校未招该专业"
+    )
+    # 抄自契约：专业行的字段清单。多一个少一个都算失败。
+    MAJOR_KEYS = {
+        "raw_major_name", "norm_name", "std_status", "std_major",
+        "source_province", "year", "category", "batch", "subject_req",
+        "min_score", "max_score", "avg_score", "min_rank", "admit_count",
+    }
+
+    mj = check(
+        f"colleges/{MIXED}/majors",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?page_size=5",
+        detail=lambda p: (
+            f"total={p.get('total')}  本页 {len(p.get('items', []))} 条  "
+            f"display_deduplicated={p.get('display_deduplicated')}  "
+            f"未提供专业名={p.get('facts_without_major_name')}"
+        ),
+    )
+    mj_items = (mj.get("items") or []) if isinstance(mj, dict) else []
+
+    expect_true("专业列表能返回真实数据", bool(mj_items), f"total={mj.get('total')}")
+
+    if mj_items:
+        keys = set(mj_items[0])
+        expect_true(
+            "专业行字段恰好是约定的 14 个（两层语义分开给：raw_major_name + std_major）",
+            keys == MAJOR_KEYS,
+            f"多={sorted(keys - MAJOR_KEYS)}  缺={sorted(MAJOR_KEYS - keys)}",
+        )
+        expect_true(
+            "来源招生专业表达恒有值（这一行真实招的是什么，永远是它）",
+            all(it.get("raw_major_name") for it in mj_items),
+            f"本页 {len(mj_items)} 条全部非空",
+        )
+        expect_true(
+            "被排除的无专业名记录有显式计数，不是静默消失",
+            isinstance(mj.get("facts_without_major_name"), int),
+            f"facts_without_major_name={mj.get('facts_without_major_name')}",
+        )
+
+    # ── 守恒：mapped + unmapped 必须恰好等于不筛 ─────────────────────
+    # 这是整个专业接口最重要的一条。未建立标准映射的那 62% 一旦被丢掉，
+    # 前端就会把「规则没归一」显示成「该校没这个专业」。
+    only_mapped = check(
+        f"colleges/{MIXED}/majors?mapping=mapped",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?mapping=mapped&page_size=1",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    only_unmapped = check(
+        f"colleges/{MIXED}/majors?mapping=unmapped",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?mapping=unmapped&page_size=1",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "mapped + unmapped 恰好等于不筛时的 total（一条都没丢）",
+        (only_mapped.get("total") or 0) + (only_unmapped.get("total") or 0)
+        == (mj.get("total") or 0),
+        f"{only_mapped.get('total')} + {only_unmapped.get('total')} "
+        f"vs 不筛 {mj.get('total')}",
+    )
+    expect_true(
+        "未建立标准映射的专业确实存在且被返回（不是空集）",
+        (only_unmapped.get("total") or 0) > 0,
+        f"mapping=unmapped 有 {only_unmapped.get('total')} 条",
+    )
+
+    un = check(
+        "majors?mapping=unmapped 取 3 条看形状",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?mapping=unmapped&page_size=3",
+        detail=lambda p: f"{len(p.get('items', []))} 条",
+    )
+    un_items = (un.get("items") or []) if isinstance(un, dict) else []
+    expect_true(
+        "unmapped 行 std_major=null，但 raw_major_name 照常有值（没有被丢掉）",
+        bool(un_items)
+        and all(it.get("std_major") is None and it.get("raw_major_name") for it in un_items),
+        f"{len(un_items)} 条："
+        + ", ".join(str(it.get("raw_major_name")) for it in un_items[:3]),
+    )
+
+    # ── 按标准专业筛：必须带覆盖警告 ─────────────────────────────────
+    filt = check(
+        f"colleges/{MIXED}/majors?std_major_id={STD_MAJOR}",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?std_major_id={STD_MAJOR}&page_size=5",
+        detail=lambda p: f"total={p.get('total')}  warnings={p.get('warnings')}",
+    )
+    expect_true(
+        "按标准专业筛选时给出覆盖警告（不许把 37.8% 的覆盖当成全部）",
+        COVERAGE_WARN in (filt.get("warnings") or []),
+        f"warnings={filt.get('warnings')}",
+    )
+    expect_true(
+        "标准专业筛选确实收窄了结果（不是被静默忽略）",
+        0 <= (filt.get("total") or 0) < (mj.get("total") or 0),
+        f"{filt.get('total')} < {mj.get('total')}",
+    )
+    expect_true(
+        "筛出来的每一行 std_major 都指向被筛的那个专业",
+        all(
+            (it.get("std_major") or {}).get("major_id") == STD_MAJOR
+            for it in (filt.get("items") or [])
+        ),
+        f"{len(filt.get('items') or [])} 条",
+    )
+
+    check(
+        "majors mapping 非法值 -> 422",
+        "GET",
+        f"/api/colleges/{MIXED}/majors?mapping=bogus",
+        expect=422,
+    )
+    check(
+        "colleges/999999999/majors 不存在的高校 -> 空列表而非报错（与 /admissions 同口径）",
+        "GET",
+        "/api/colleges/999999999/majors",
+        detail=lambda p: f"total={p.get('total')}  items={len(p.get('items', []))}",
+    )
+
+    # ── data_availability 两个专业键的区分 ───────────────────────────
+    # 这组是「未建立标准映射 ≠ 没有该专业」在接口层面的落地检查。
+    # 3877 有 638 条专业事实却零条 Tier 1 映射：如果只留一个 major_mapping，
+    # 前端会把它的专业视图整个藏掉。
+    for sid, who, want in (
+        (MIXED, "四川师范大学（有事实、有映射）", (True, True)),
+        (NO_MAPPING, "西交利物浦大学（有事实、零映射）", (True, False)),
+    ):
+        d = check(
+            f"colleges/{sid} 详情（{who}）",
+            "GET",
+            f"/api/colleges/{sid}",
+            detail=lambda p: f"data_availability={p['data'].get('data_availability')}",
+        )
+        av = ((d.get("data") or {}) if isinstance(d, dict) else {}).get(
+            "data_availability"
+        ) or {}
+        expect_true(
+            f"{who}：major_admission={want[0]} / major_mapping={want[1]}",
+            (av.get("major_admission"), av.get("major_mapping")) == want,
+            f"实际 major_admission={av.get('major_admission')}  "
+            f"major_mapping={av.get('major_mapping')}",
+        )
+
+    # ── 12 标准专业目录 ─────────────────────────────────────────────
+    dic = check(
+        "majors 标准专业目录",
+        "GET",
+        "/api/majors?page_size=3",
+        detail=lambda p: (
+            f"total={p.get('total')}  本页 {len(p.get('items', []))} 条  "
+            f"{[i.get('std_name') for i in (p.get('items') or [])]}"
+        ),
+    )
+    expect_true(
+        "标准专业目录与库内一致（1,874 行）",
+        dic.get("total") == 1874,
+        f"total={dic.get('total')}",
+    )
+    dic_items = (dic.get("items") or []) if isinstance(dic, dict) else []
+    if dic_items:
+        need = {
+            "major_id", "std_code", "std_name", "education_level",
+            "discipline", "category", "catalog_version",
+        }
+        expect_true(
+            "标准专业字段恰好（不外泄 status 这类内部 QC 标记）",
+            set(dic_items[0]) == need,
+            f"多={sorted(set(dic_items[0]) - need)}  缺={sorted(need - set(dic_items[0]))}",
+        )
+
+    qdic = check(
+        "majors?q=计算机 按名称搜索",
+        "GET",
+        "/api/majors?q=计算机&page_size=3",
+        detail=lambda p: (
+            f"total={p.get('total')}  "
+            f"{[i.get('std_name') for i in (p.get('items') or [])]}"
+        ),
+    )
+    q_items = (qdic.get("items") or []) if isinstance(qdic, dict) else []
+    expect_true(
+        "名称搜索命中的每一条都真的含关键词",
+        bool(q_items) and all("计算机" in (i.get("std_name") or "") for i in q_items),
+        f"{len(q_items)} 条",
+    )
+    # catalog_version 与 education_level 是绑定的（实测）：本科=2026，专科/职业本科=2021。
+    # 这条是 2026-09-17 写对接文档时踩出来的——当时凭印象把职业本科那条写成了
+    # catalog_version="2026"，被实测打脸。钉住它，免得文档再漂。
+    expect_true(
+        "catalog_version 与 education_level 绑定（本科=2026，其余=2021）",
+        bool(q_items)
+        and all(
+            (i.get("catalog_version") == "2026") == (i.get("education_level") == "本科")
+            for i in q_items
+        ),
+        ", ".join(
+            f"{i.get('std_name')}/{i.get('education_level')}/{i.get('catalog_version')}"
+            for i in q_items
+        ),
+    )
+
+    # ── 13 反查 ────────────────────────────────────────────────────
+    check(
+        "majors/999999999/colleges 不存在的专业 -> 404",
+        "GET",
+        "/api/majors/999999999/colleges",
+        expect=404,
+    )
+    rev = check(
+        f"majors/{STD_MAJOR}/colleges 反查高校",
+        "GET",
+        f"/api/majors/{STD_MAJOR}/colleges?page_size=5",
+        detail=lambda p: (
+            f"total={p.get('total')}  本页 {len(p.get('items', []))} 条  "
+            f"warnings={p.get('warnings')}"
+        ),
+    )
+    rev_items = (rev.get("items") or []) if isinstance(rev, dict) else []
+    expect_true("反查返回高校", bool(rev_items), f"total={rev.get('total')}")
+    expect_true(
+        "反查的 total 是**高校数**不是事实数",
+        rev.get("total") == REV_TOTAL,
+        f"期望 {REV_TOTAL} 所，实际 {rev.get('total')}",
+    )
+    expect_true(
+        "反查一律带覆盖警告（它是纯 Tier 1 查询，天生只覆盖 37.8%）",
+        COVERAGE_WARN in (rev.get("warnings") or []),
+        f"warnings={rev.get('warnings')}",
+    )
+    expect_true(
+        "反查回带 std_major，前端不必猜自己查的是哪个专业",
+        (rev.get("std_major") or {}).get("major_id") == STD_MAJOR,
+        f"std_major={rev.get('std_major')}",
+    )
+    if rev_items:
+        need = {
+            "school_id", "national_code", "name", "edu_level",
+            "reg_province", "fact_count",
+        }
+        expect_true(
+            "反查元素字段齐全",
+            need <= set(rev_items[0]),
+            f"缺 {sorted(need - set(rev_items[0]))}",
+        )
+        tgt = next((i for i in rev_items if i.get("school_id") == MIXED), None)
+        if tgt:
+            expect_true(
+                f"反查里 {MIXED} 四川师范大学的 fact_count 是条数不是人数",
+                isinstance(tgt.get("fact_count"), int) and tgt["fact_count"] > 0,
+                f"fact_count={tgt.get('fact_count')}",
+            )
 
     print()
     print("=" * 68)

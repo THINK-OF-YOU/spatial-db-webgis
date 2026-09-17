@@ -29,7 +29,7 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 │   └── app/
 │       ├── main.py         入口、路由注册、CORS
 │       ├── db/             连接池、配置
-│       ├── api/            路由模块（colleges / map / spatial / search / meta / admissions）
+│       ├── api/            路由模块（colleges / map / spatial / search / majors / meta / admissions）
 │       ├── schemas/        Pydantic 请求响应模型
 │       └── services/       查询服务
 ├── frontend/           Vue 3 + Leaflet 前端
@@ -45,7 +45,8 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 │   └── data/               数据导入脚本
 └── docs/
     ├── 00_协作规范.md      ★ 开工前必读
-    └── 01_接口样例.md      10 个接口的实测请求/响应（自动生成，勿手改）
+    ├── 01_接口样例.md      13 个接口的实测请求/响应（自动生成，勿手改）
+    └── 02_专业API对接文档.md  ★ 前端做专业视图看这份
 ```
 
 `docs/01_接口样例.md` 由 `backend/capture_samples.py` 真跑一遍服务生成，里面的响应是
@@ -55,6 +56,13 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 cd backend
 ./.venv/Scripts/python.exe capture_samples.py   # 会临时起一个服务，跑完自动退出
 ```
+
+**专业接口（11–13）**是 2026-09-17 数据库恢复专业语义链之后新增的，前端对接看
+[`docs/02_专业API对接文档.md`](docs/02_专业API对接文档.md)。有一件事必须先知道：
+
+> 专业是**两层语义**。「来源招生专业表达」覆盖 98.62%，「标准专业」只覆盖 37.80%
+> （本轮只入库 Tier 1 精确映射）。**未建立标准映射 ≠ 该校没有这个专业**——
+> 六成以上的记录 `std_major` 是 `null`，但分数位次都是真的，必须照常显示。
 
 ---
 

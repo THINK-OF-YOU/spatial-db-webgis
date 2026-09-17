@@ -1,4 +1,4 @@
-"""抓取 8 个接口的真实请求/响应，生成 docs/01_接口样例.md。
+"""抓取 13 个接口的真实请求/响应，生成 docs/01_接口样例.md。
 
 在 backend 目录下运行：
 
@@ -154,6 +154,12 @@ def main() -> int:
     L.append("| 8 | `POST /api/spatial/within` | 莫炜钧 |")
     L.append("| 9 | `POST /api/search` | 莫炜钧（总集成） |")
     L.append("| 10 | `GET /api/colleges/{school_id}/transport` | 莫炜钧 |")
+    L.append("| 11 | `GET /api/colleges/{school_id}/majors` | 莫炜钧 |")
+    L.append("| 12 | `GET /api/majors` | 莫炜钧 |")
+    L.append("| 13 | `GET /api/majors/{major_id}/colleges` | 莫炜钧 |")
+    L.append("")
+    L.append("> 11–13 是 2026-09-17 数据库恢复专业语义链之后新增的，"
+             "详细对接说明见 **`docs/02_专业API对接文档.md`**。")
     L.append("")
     L.append("---")
     L.append("")
@@ -273,6 +279,54 @@ def main() -> int:
                  "越界一律 422，**不静默钳制、也不忽略**——宁可让调用方看见错误，"
                  "也不要返回一个「看起来筛过了其实没筛」的结果。同样适用于 "
                  "`radius_km > 20` 与 `limit > 200`。")
+
+    L.append("---")
+    L.append("")
+
+    L.append("## 11–13　专业　`api/majors.py` + `services/major_service.py`")
+    L.append("")
+    section(L, "11. 高校招生专业（两层语义同时返回）", "GET",
+            "/api/colleges/5334/majors?page_size=3",
+            note="一行 = 一个（来源专业表达 × 生源省 × 年份 × 科类 × 批次）组合下的录取分数。"
+                 "**`raw_major_name`（来源招生专业表达，覆盖 98.62%）与 `std_major`"
+                 "（教育部标准专业，Tier 1 精确映射，覆盖 37.80%）是两个不同的概念**，"
+                 "分两个字段返回、不合并。`std_major` 为 `null` 只说明来源专业名没有被"
+                 "规则 v1 精确归一，**不代表该校没有这个专业**——所以这一行不会被丢掉。"
+                 "`facts_without_major_name` 是该校另有几条录取记录来源压根没给专业名"
+                 "（全库 22,325 条），被排除但**不是静默排除**。")
+    section(L, "11b. 只看未建立标准映射的（std_major=null）", "GET",
+            "/api/colleges/5334/majors?mapping=unmapped&page_size=3",
+            note="这 62% 的记录必须照常查得到。前端渲染时把 `std_major` 为 null 的行标成"
+                 "「来源专业名，未归一」，**不要**显示成「无专业」，更不要隐藏。")
+    section(L, "11c. 按标准专业筛选（带覆盖警告）", "GET",
+            "/api/colleges/5334/majors?std_major_id=2294&page_size=3",
+            note="`major_id` 从接口 12 拿。⚠️ 这是**只覆盖 37.80%** 的查询，"
+                 "响应必定带 warnings，前端必须展示。对照 11 的 `total=4435`，"
+                 "这里只剩 22 条——差额不是「没有」，是「规则没归一」。")
+    section(L, "11d. 参数越界 -> 422", "GET",
+            "/api/colleges/5334/majors?mapping=bogus",
+            note="`mapping` 只允许 `all` / `mapped` / `unmapped`，越界一律 422，"
+                 "不静默钳制（同 API 10 的 `mode` 口径）。")
+    section(L, "11e. 不存在的高校 -> 空列表而非 404", "GET",
+            "/api/colleges/999999999/majors",
+            note="与 `/admissions` 同口径：高校子资源在高校不存在时返回空列表。"
+                 "前端要靠接口 2 的 404 来发现高校不存在，别指望这里报错。")
+    section(L, "12. 标准专业目录（字典 + 搜索）", "GET", "/api/majors?page_size=3",
+            note="全表 1,874 行 / 1,711 个专业名，**与高校无关**，是教育部标准专业目录。"
+                 "前端用它做「按标准专业筛选」的搜索框，拿到 `major_id` 再传给 11 / 13。"
+                 "不返回 `status`（全表都是 `candidate_baseline`，是内部 QC 标记）。")
+    section(L, "12b. 按名称搜索", "GET", "/api/majors?q=计算机&page_size=3",
+            note="`q` 同时匹配专业名与**专业代码**（如 `080901`）。")
+    section(L, "13. 反查：招这个标准专业的高校", "GET",
+            "/api/majors/2294/colleges?page_size=3",
+            note="⚠️ 纯 Tier 1 查询，**天生只覆盖 37.7984% 的录取事实**。"
+                 "查到 778 所不代表全国只有 778 所招这个专业。响应必带覆盖警告，"
+                 "前端**不要**把它渲染成「开设该专业的全部高校」。"
+                 "`fact_count` 是录取事实条数，**不是招生人数**"
+                 "（招生人数是 `admit_count`，按省/年/批次分行给，见接口 11）。")
+    section(L, "13b. 不存在的专业 -> 404", "GET", "/api/majors/999999999/colleges",
+            note="专业不存在返回 `404`；而不存在的高校调接口 11 返回的是空列表——"
+                 "**两者口径不同**，别混。")
 
     L.append("---")
     L.append("")
