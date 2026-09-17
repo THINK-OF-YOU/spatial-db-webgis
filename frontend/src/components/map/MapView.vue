@@ -11,9 +11,10 @@ import CampusLayer from './CampusLayer.vue'
 import RegionLayer from './RegionLayer.vue'
 import MapToolbar from './MapToolbar.vue'
 import MapLegend from './MapLegend.vue'
+import TransportPanel from '../transport/TransportPanel.vue'
 
 const store = useSearchStore()
-const { referencePoint, radiusKm, drawnGeometry } = storeToRefs(store)
+const { referencePoint, radiusKm, drawnGeometry, selectedCollege } = storeToRefs(store)
 
 const el = ref<HTMLDivElement | null>(null)
 const map = shallowRef<L.Map | null>(null)
@@ -289,6 +290,8 @@ function onClearSpatial() {
     <MapLegend />
     <CampusLayer />
     <RegionLayer />
+    <!-- 临时演示入口：点校区选中后浮出周边交通。正式位置在范传智的详情 Drawer。 -->
+    <TransportPanel :school-id="selectedCollege?.school_id ?? null" />
   </div>
 </template>
 
