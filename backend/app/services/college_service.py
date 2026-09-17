@@ -85,13 +85,17 @@ def get_college(school_id: int) -> dict | None:
 
 
 def list_campuses_of(school_id: int) -> list[dict]:
-    """某高校的校区点。只返回业务字段，不含 source / transform_method 等内部列。"""
+    """某高校的校区点。只返回业务字段，不含 source / transform_method 等内部列。
+
+    **不返回 campus.address**：全表 432 行的 address 全是空串（2026-09-17 实测，
+    count(address)=0），返回它只会让前端渲染出一行空白；而且要按「缺失值返回
+    null」的口径，空串本身就不该原样给出。契约 §4.3 的字段清单里也没有它。
+    """
     with get_cursor() as cur:
         cur.execute(
             """
             select campus_id,
                    campus_name,
-                   address,
                    verify_status,
                    st_x(geom) as lon,
                    st_y(geom) as lat
@@ -107,9 +111,17 @@ def list_campuses_of(school_id: int) -> list[dict]:
 def college_availability(school_id: int) -> dict:
     """data_availability —— 告诉前端这个学校哪些数据真的能拿到。
 
+    字段与契约 §4.3 的示例逐字对齐，**只有三个**：
+    school_admission / campus / major_mapping。
+
     专业语义链为空（admission_major_expression / admission_major_group /
     expr_major_map / group_expr 都是 0 行），所以 major_mapping 恒为 false。
     见协作规范 §1.3 与勘察报告 §2.1。
+
+    这里**刻意不返回 enrollment_plan**：附录 B 第三条要求「不要把 EnrollmentPlan
+    或 MajorAdmission 引入核心页面」，数据现状表也写「EnrollmentPlan 不作为 V1
+    主列表」，而 §4.3 的字段清单里没有它。原先返回了一个 enrollment_plan 布尔值，
+    2026-09-17 移除——它既不在契约里，又把 V1 明确不用的数据源暴露给了前端。
     """
     with get_cursor() as cur:
         cur.execute(
@@ -119,10 +131,7 @@ def college_availability(school_id: int) -> dict:
                       where school_id = %(sid)s and geom is not null) as campus,
               exists(select 1 from school_unit u
                       join school_admission a on a.unit_id = u.unit_id
-                     where u.school_id = %(sid)s)                    as school_admission,
-              exists(select 1 from school_unit u
-                      join enrollment_plan e on e.unit_id = u.unit_id
-                     where u.school_id = %(sid)s)                    as enrollment_plan
+                     where u.school_id = %(sid)s)                    as school_admission
             """,
             {"sid": school_id},
         )

@@ -135,15 +135,25 @@ def search(req: SearchRequest):
             )
             params["s_geojson"] = json.dumps(spatial.geometry, ensure_ascii=False)
 
-        if spatial.reference_point and spatial.radius_km:
-            predicates.append(
-                "st_dwithin(cp.geom::geography,"
-                " st_setsrid(st_makepoint(%(s_lon)s, %(s_lat)s), 4326)::geography,"
-                " %(s_radius_m)s)"
-            )
+        if spatial.reference_point:
+            # s_lon / s_lat 一旦给了参考点就必须绑定：下面的 distance_select 与
+            # distance_join 只依赖 reference_point，**不依赖 radius_km**。
+            # 原先这两个参数只在「reference_point 且 radius_km」分支里绑定，
+            # 于是「只给参考点、不给半径」会 KeyError: 's_lon' 直接 500。
             params["s_lon"] = spatial.reference_point.lon
             params["s_lat"] = spatial.reference_point.lat
-            params["s_radius_m"] = spatial.radius_km * 1000.0
+
+            # 半径只决定**是否过滤**。只给参考点不给半径 → 不筛，只报距离。
+            # 契约 §4.10 的示例两者成对出现，未规定单独给参考点的语义；
+            # 这里取不会让调用方踩空的宽松解释，真要改成 422 属于契约澄清，
+            # 需全组确认后再收紧。
+            if spatial.radius_km:
+                predicates.append(
+                    "st_dwithin(cp.geom::geography,"
+                    " st_setsrid(st_makepoint(%(s_lon)s, %(s_lat)s), 4326)::geography,"
+                    " %(s_radius_m)s)"
+                )
+                params["s_radius_m"] = spatial.radius_km * 1000.0
 
     spatial_enabled = bool(predicates)
 

@@ -44,7 +44,16 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 │   ├── query/              KNN、半径、统计查询（文件名带作者前缀）
 │   └── data/               数据导入脚本
 └── docs/
-    └── 00_协作规范.md      ★ 开工前必读
+    ├── 00_协作规范.md      ★ 开工前必读
+    └── 01_接口样例.md      10 个接口的实测请求/响应（自动生成，勿手改）
+```
+
+`docs/01_接口样例.md` 由 `backend/capture_samples.py` 真跑一遍服务生成，里面的响应是
+`gaokao3` 的实际返回，不是手写的。接口改了就在 `backend/` 下重跑一次脚本，文档不会和实现漂移：
+
+```bash
+cd backend
+./.venv/Scripts/python.exe capture_samples.py   # 会临时起一个服务，跑完自动退出
 ```
 
 ---

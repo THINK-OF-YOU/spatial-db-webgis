@@ -160,6 +160,34 @@ def main() -> int:
         expect=404,
     )
 
+    # ── 契约对齐回归（2026-09-17）───────────────────────────────────
+    # 这两条守的是「曾经多返回了契约里没有的字段」，防止它们悄悄回来。
+    # 3059 是已知有校区的学校（和上面 transport 用的是同一所）。
+    det = check(
+        "colleges 详情 school_id=3059（有校区的学校）",
+        "GET",
+        "/api/colleges/3059",
+        detail=lambda p: f"campuses={len(p['data'].get('campuses', []))}",
+    )
+    if isinstance(det, dict):
+        avail = det["data"].get("data_availability") or {}
+        expect_true(
+            "data_availability 只有契约 §4.3 的三个键，不夹带 enrollment_plan",
+            set(avail) == {"school_admission", "campus", "major_mapping"},
+            f"实际键={sorted(avail)}",
+        )
+        cps = det["data"].get("campuses") or []
+        # 恰好这 5 个字段。address 曾经在内，但全库 432 行的 address 全是空串，
+        # 返回它只会让前端渲染出一行空白；source / transform_method 等内部列
+        # 也不该外泄。用「恰好等于」而不是「不包含」，多一个少一个都算失败。
+        expect_true(
+            "campuses 元素恰好是 5 个业务字段（没有 address，也没有 source 等内部列）",
+            bool(cps) and all(set(c) == {
+                "campus_id", "campus_name", "verify_status", "lon", "lat"
+            } for c in cps),
+            f"{len(cps)} 个校区，字段={sorted(cps[0]) if cps else '—'}",
+        )
+
     print()
     print("=" * 68)
     print("莫炜钧：5 校区地图 / 6 行政区")
@@ -310,6 +338,53 @@ def main() -> int:
         "POST",
         "/api/search",
         {},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+
+    # ── 回归：只给 reference_point、不给 radius_km ────────────────────
+    # 契约 §4.10 的示例把两者成对给出，但 schema 允许只给其一。
+    # 曾经这里 KeyError: 's_lon' → 500：s_lon/s_lat 只在「参考点且半径」分支
+    # 里绑定，而算距离的 distance_select/distance_join 只依赖参考点。
+    rp_only = check(
+        "search 只给 reference_point、不给 radius_km（回归）",
+        "POST",
+        "/api/search",
+        {"spatial": {"reference_point": {"lon": lon, "lat": lat}}, "page_size": 50},
+        detail=lambda p: f"total={p.get('total')}  warnings={p.get('warnings')}",
+    )
+    rp_items = (rp_only.get("items") or []) if isinstance(rp_only, dict) else []
+    expect_true(
+        "只给参考点：不崩，且不筛空间（总数与无条件一致）",
+        (rp_only.get("total") or 0) > 0,
+        f"total={rp_only.get('total')}",
+    )
+    expect_true(
+        "只给参考点：照样算出了 distance_km",
+        any(it.get("distance_km") is not None for it in rp_items),
+        f"本页 {len(rp_items)} 条，有距离的 "
+        f"{sum(1 for it in rp_items if it.get('distance_km') is not None)} 条",
+    )
+    expect_true(
+        "distance_km 与 has_campus 一致：有校区才有距离，没校区是 null 而不是 0",
+        all(
+            (it.get("distance_km") is None) == (not it.get("has_campus"))
+            for it in rp_items
+        ),
+        "逐条比对通过",
+    )
+    expect_true(
+        "没启用空间筛选时不谎报「空间覆盖不足」",
+        not (rp_only.get("warnings") or []),
+        f"warnings={rp_only.get('warnings')}",
+    )
+
+    # 只给半径、不给参考点：半径没有圆心，无从筛起，当前按「不筛」处理。
+    # 契约未规定这种组合，这里只钉住「不崩」，语义待全组确认后再收紧。
+    check(
+        "search 只给 radius_km、不给 reference_point（不崩即可）",
+        "POST",
+        "/api/search",
+        {"spatial": {"radius_km": 50}},
         detail=lambda p: f"total={p.get('total')}",
     )
 
