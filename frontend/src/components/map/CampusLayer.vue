@@ -57,6 +57,8 @@ async function render(m: L.Map) {
       arr.push(marker)
       bySchool.set(p.school_id, arr)
     }
+    updateSelection()
+    updateResults()
   } catch (e) {
     error.value = '校区图层加载失败'
     console.warn(e)
@@ -68,7 +70,8 @@ watch(mapRef, (m) => {
 }, { immediate: true })
 
 // 列表/地图选中 → 地图定位并高亮；无 Campus 则不动、不报错（契约 §8.2）
-watch(selectedCollege, (c) => {
+function updateSelection() {
+  const c = selectedCollege.value
   const m = mapRef.value
   if (!m || !selectHighlight) return
   selectHighlight.clearLayers()
@@ -89,18 +92,21 @@ watch(selectedCollege, (c) => {
       }),
     ).addTo(selectHighlight!),
   )
-})
+}
+watch(selectedCollege, updateSelection)
 
 // 表达业务结果的空间部分：查询结果存在时，非结果学校校区淡化（契约 §5 规则3）
 const resultIds = computed(() => new Set<number>(results.value.map((r) => r.school_id)))
-watch(resultIds, (ids) => {
+function updateResults() {
+  const ids = resultIds.value
   const active = ids.size > 0
   for (const rec of records) {
     const dim = active && !ids.has(rec.schoolId)
     const base = styleFor(rec.status)
     rec.marker.setStyle({ ...base, fillOpacity: dim ? (base.fillOpacity ?? 1) * 0.2 : base.fillOpacity })
   }
-})
+}
+watch(resultIds, updateResults)
 </script>
 
 <template>

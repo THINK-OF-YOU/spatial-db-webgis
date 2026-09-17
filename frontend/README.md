@@ -30,12 +30,13 @@ src/
 ├── main.ts
 ├── style.css
 ├── views/
-│   └── SearchView.vue         业务页面骨架（范传智）
+│   └── SearchView.vue         College 搜索、筛选、结果、分页（范传智）
 ├── stores/
 │   └── useSearchStore.ts      全页面唯一共享状态（范传智主维护）
 ├── types/                     共享类型
-├── api/                       接口封装（范传智，待建）
+├── api/                       http.ts 公共请求；colleges.ts 真实高校接口
 ├── components/
+│   ├── CollegeDetailPanel.vue 高校详情侧栏，响应 selectedCollege
 │   └── map/                   地图 GIS 模块（高天恒）
 │       ├── MapView.vue        地图初始化 / 参考点 / 半径圆 / 矩形与多边形绘制
 │       ├── CampusLayer.vue    校区点渲染与点击、选中定位高亮、结果淡化
@@ -75,11 +76,13 @@ npm run preview      # 预览打包产物
 地图数据统一走 `components/map/mapData.ts`，组件不直接发请求：
 
 ```ts
-const USE_MOCK = true   // true：读本地 GeoJSON；false：请求 /api
+const USE_MOCK = false  // M1 默认真实数据；仅 GIS 独立开发可改为 true
 ```
 
-- 后端在搭档机上，本机开发时 `USE_MOCK = true` 即可独立跑通地图。
-- 联调时改成 `false`，并在 `vite.config.ts` 加 `/api` 代理指向后端机（如 `http://<后端机IP>:8000`）。
+- College 列表和详情始终使用真实 FastAPI，不回退 Mock。
+- Vite 开发与预览的 `/api` 默认代理到 `http://127.0.0.1:8000`。远程后端可在本地环境设置 `API_TARGET` 后重启 Vite；不提交 `.env` 或凭据。
+- 生产静态部署需由 Web 服务器反向代理 `/api`，Vite 配置不会写入生产包。
+- 地图浏览请求复用 `api/http.ts`；行政区使用现有 `simplify=0.01` 参数降低传输量。
 - 切换只改数据源，组件字段不变（契约 §13）。
 
 `nearby` / `within` 也已封装（默认只用 `CONFIRMED`，可传 `verify_status` 覆盖），
@@ -112,8 +115,20 @@ const USE_MOCK = true   // true：读本地 GeoJSON；false：请求 /api
 
 ---
 
-## 给范传智的协调事项
+## M1 业务交互与边界
 
-1. `package.json` 已新增 `leaflet` 与 `@types/leaflet`（`package.json` 归范传智，走 PR 时请确认）。
-2. `api/` 目录目前为空；地图用了 `components/map/mapData.ts` 做数据层，联调时可并进 `api/map`。
-3. 联调真实后端时需在 `vite.config.ts` 加 `/api` 代理（见上）。
+- 查询按钮 / Enter 将草稿条件写入 `filters`，发送 `GET /api/colleges` 的 `q / edu_level / reg_province / page / page_size`。新查询回到第一页；分页只使用已应用的条件。
+- `reg_province` 显示为“登记地区”，按原值精确筛选；不是空间选区。
+- `results` 只存当前页的真实高校，是唯一主业务结果源；后端 `warnings` 去重展示。网络/HTTP/解析错误单独显示并提供重试。
+- 选中列表或校区都通过 `selectedCollege.school_id` 请求真实详情。详情保留在侧栏局部状态，不把详情或 Leaflet 实例放进 Store。
+- 新请求取消旧请求，避免快速切换时旧响应覆盖新结果；15 秒超时；详情支持关闭、Esc 与返回焦点。
+- 既有地图空间工具保留，但 M1 高校查询不使用空间条件、不请求 `/api/search`、招生接口或附近/范围接口。
+- GIS 小范围整合：真实数据开关、公共请求复用、异步图层完成后同步选中/结果；补建既有 `marker` pane，并防止绘制模式的图层点击拦截。未重写 GIS 算法。
+
+## 本轮验证（2026-09-17）
+
+- `npm run type-check`、`npm run build`。
+- 本机 `gaokao3` 真实后端：2,952 所高校、432 个校区；列表、名称搜索、层次/登记地区组合筛选、分页、真实详情。
+- 浏览器验证 CONFIRMED / CANDIDATE / 无 Campus、加载、空结果、HTTP 错误与重试。故障状态通过浏览器请求拦截验证，正常流程全部使用真实 API。
+- 地图→详情、列表→定位高亮、参考点/半径、矩形、多边形、行政区、清除空间；地图操作不覆盖业务 results。
+- 浏览器控制台无未捕获异常；未请求 M2/M4 业务接口。底图依赖 Esri 网络服务。

@@ -7,3 +7,4 @@ export type {
   SearchResult,
   SearchState,
 } from './search'
+export type { College, CollegeDetail, CollegeFilters, CollegeQuery, CollegePage } from './college'

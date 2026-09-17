@@ -37,6 +37,8 @@ onMounted(() => {
   const m = markRaw(L.map(el.value, { center: [35.0, 104.0], zoom: 4, zoomControl: true }))
   // 行政区放独立 pane（低于 overlayPane 400），校区点永远压在上面
   m.createPane('regions').style.zIndex = '380'
+  // 既有参考点和选中光环使用此 pane；必须在渲染前创建。
+  m.createPane('marker').style.zIndex = '450'
   markRaw(
     L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
@@ -306,5 +308,11 @@ function onClearSpatial() {
 .mode-polygon,
 .mode-point {
   cursor: crosshair;
+}
+/* 选点/绘制时让输入到达地图，避免行政区与校区点击拦截工具操作。 */
+.mode-point :deep(.leaflet-interactive),
+.mode-rect :deep(.leaflet-interactive),
+.mode-polygon :deep(.leaflet-interactive) {
+  pointer-events: none;
 }
 </style>

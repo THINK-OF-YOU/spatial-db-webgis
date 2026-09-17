@@ -1,4 +1,5 @@
 import campusesRaw from '../../mocks/campuses.geojson?raw'
+import { request } from '../../api/http'
 import regionsRaw from '../../mocks/regions.geojson?raw'
 import type { FeatureCollection, MultiPolygon, Point, Polygon } from 'geojson'
 import type {
@@ -15,8 +16,7 @@ import type {
  * Mock 先行：USE_MOCK = true 时读本地 GeoJSON / 本地计算；后端在搭档机上，
  * 联调时改成 false 即切真实 /api（字段不变，组件不重写）。
  */
-const USE_MOCK = true
-const API_BASE = '/api'
+const USE_MOCK = false
 
 // 冻结 warning 文案（与后端 warnings.py 一致，见协作规范 §5.4）
 const WARN_CANDIDATE = '本次空间查询包含候选校区'
@@ -25,19 +25,15 @@ const campusesFC = JSON.parse(campusesRaw) as FeatureCollection<Point, CampusPro
 const regionsFC = JSON.parse(regionsRaw) as FeatureCollection<Polygon | MultiPolygon, RegionProps>
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`)
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
-  return res.json() as Promise<T>
+  return request<T>(path)
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  return request<T>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`)
-  return res.json() as Promise<T>
 }
 
 /** /api/map/campuses：浏览态同时返回 CONFIRMED 与 CANDIDATE。 */
@@ -49,7 +45,7 @@ export async function loadCampuses(): Promise<FeatureCollection<Point, CampusPro
 /** /api/map/regions：默认 province 级。 */
 export async function loadRegions(): Promise<FeatureCollection<Polygon | MultiPolygon, RegionProps>> {
   if (USE_MOCK) return regionsFC
-  return get<FeatureCollection<Polygon | MultiPolygon, RegionProps>>('/map/regions')
+  return get<FeatureCollection<Polygon | MultiPolygon, RegionProps>>('/map/regions?simplify=0.01')
 }
 
 /** /api/spatial/nearby：参考点 + 半径。默认只用 CONFIRMED（契约 §3.3）。 */

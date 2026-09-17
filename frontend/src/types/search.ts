@@ -1,4 +1,5 @@
 import type { Polygon } from 'geojson'
+import type { College, CollegeFilters } from './college'
 
 /** 轻量选中状态；school_id 沿用执行书中的数值 ID。 */
 export interface SelectedCollegeType {
@@ -21,11 +22,11 @@ export interface MapBounds {
 
 export type DrawnGeometry = Polygon
 
-/** 本轮空占位，业务筛选接入时按确认的契约增加 snake_case 字段。 */
-export type SearchFilters = Record<string, never>
+/** M1 使用 College 列表接口的已确认筛选字段。 */
+export type SearchFilters = CollegeFilters
 
-/** 仅定义结果身份下限，不代表完整 API 响应 DTO。 */
-export type SearchResult = SelectedCollegeType
+/** M1 当前页唯一业务结果源。 */
+export type SearchResult = College
 
 export interface SearchState {
   filters: SearchFilters
