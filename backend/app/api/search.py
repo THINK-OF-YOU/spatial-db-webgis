@@ -11,7 +11,7 @@ app/services/admission_service.py。契约见《任务执行书》§4.10。
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.db.pool import get_cursor
@@ -95,17 +95,16 @@ def search(req: SearchRequest):
     # ── 招生条件：交给倪嵩的 service，本接口不写第二套招生 SQL ──────────
     admission_ids: list[int] | None = None
     if req.admission:
-        try:
-            admission_ids = admission_service.filter_school_ids(
-                source_province=req.admission.source_province,
-                year=req.admission.year,
-                category=req.admission.category,
-                batch=req.admission.batch,
-            )
-        except admission_service.AdmissionFilterNotImplemented as exc:
-            # 不静默忽略招生条件——那会返回"看起来筛过了其实没筛"的结果，
-            # 比报错更糟。
-            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        # 倪嵩的 service 已实现（2026-09-17）。骨架阶段这里捕获
+        # AdmissionFilterNotImplemented 返回 501，是为了不返回"看起来筛过了
+        # 其实没筛"的结果；该异常类已随实现一起移除，所以这里不再兜底——
+        # 真出错就走 500，不假装成功。
+        admission_ids = admission_service.filter_school_ids(
+            source_province=req.admission.source_province,
+            year=req.admission.year,
+            category=req.admission.category,
+            batch=req.admission.batch,
+        )
 
         if req.admission.category or req.admission.batch:
             warnings.append(SOURCE_VOCABULARY)

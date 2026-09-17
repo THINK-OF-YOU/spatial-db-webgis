@@ -21,14 +21,26 @@ category 17 个值、batch 174 个值；college.edu_level 只有两个值。
 ────────────────────────────────────────────────────────────────
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
+from app.services import admission_service
+from app.warnings import SOURCE_VOCABULARY, dedupe
 
 router = APIRouter(tags=["meta"])
 
 
 @router.get("/meta/filters")
 def meta_filters():
-    raise HTTPException(
-        status_code=501,
-        detail="/api/meta/filters 尚未实现（owner：倪嵩，见《任务执行书》附录 B）。",
-    )
+    """返回筛选器元数据：年份、生源省、办学层次、科类、批次。
+
+    category / batch 为来源数据原始口径，未做全国统一标准化。
+    """
+    meta = admission_service.filter_meta()
+
+    # 涉及 category / batch，加来源口径警告
+    warnings = dedupe([SOURCE_VOCABULARY])
+
+    return {
+        "data": meta,
+        "warnings": warnings,
+    }

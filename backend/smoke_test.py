@@ -312,27 +312,139 @@ def main() -> int:
         detail=lambda p: f"total={p.get('total')}",
     )
 
-    check(
-        "search 带招生条件 -> 501（倪嵩未实现，故意 501 而不是静默忽略）",
-        "POST",
-        "/api/search",
-        {"admission": {"source_province": "湖北省", "year": 2024}},
-        expect=501,
-    )
+    # 招生条件不再单独在这里测 501 —— 倪嵩实现后见下一节的真实筛选检查。
 
     print()
     print("=" * 68)
-    print("倪嵩：3 投档记录 / 4 筛选元数据（骨架阶段为 501 占位）")
+    print("倪嵩：3 投档记录 / 4 筛选元数据")
     print("=" * 68)
 
-    sid = first_id if first_id is not None else 1
-    check(
-        f"colleges/{sid}/admissions -> 501",
-        "GET",
-        f"/api/colleges/{sid}/admissions",
-        expect=501,
+    filters = check("meta/filters", "GET", "/api/meta/filters")
+
+    fdata = filters.get("data") if isinstance(filters, dict) else None
+    if not isinstance(fdata, dict) or not fdata.get("years"):
+        expect_true("filters 返回可用的筛选元数据", False, f"data={fdata!r}")
+        fdata = {}
+
+    years = fdata.get("years") or []
+    provinces = fdata.get("source_provinces") or []
+    categories = fdata.get("categories") or []
+    batches = fdata.get("batches") or []
+    print(
+        f"        years={years}  provinces={len(provinces)}"
+        f"  edu_levels={fdata.get('edu_levels')}"
+        f"  categories={len(categories)}  batches={len(batches)}"
     )
-    check("meta/filters -> 501", "GET", "/api/meta/filters", expect=501)
+    expect_true(
+        "filters 的取值来自数据库真实值（不是硬编码）",
+        bool(years) and bool(provinces) and bool(categories),
+        f"年份 {len(years)} 个、生源省 {len(provinces)} 个、科类 {len(categories)} 个",
+    )
+
+    # ── 先取一所真实高校的投档明细 ─────────────────────────────────
+    # 用记录里**真实存在**的 (生源省, 年份, 科类) 反查 /search，
+    # 就不必猜哪个组合不为空（库里科类是按年份分布的，猜一个很容易 0 条）。
+    adm_school = first_id if first_id is not None else 1
+    adm = check(
+        f"colleges/{adm_school}/admissions",
+        "GET",
+        f"/api/colleges/{adm_school}/admissions",
+        detail=lambda p: (
+            f"total={p.get('total')}  本页 {len(p.get('items', []))} 条  "
+            f"display_deduplicated={p.get('display_deduplicated')}"
+        ),
+    )
+    adm_items = (adm.get("items") or []) if isinstance(adm, dict) else []
+
+    if not adm_items and adm_school != 4687:
+        # 抽到的高校恰好没有投档记录就换一个。4687 是库里记录最多的一所。
+        print("        这所高校没有投档记录，改用 school_id=4687 再取一次")
+        adm_school = 4687
+        adm = check(
+            f"colleges/{adm_school}/admissions",
+            "GET",
+            f"/api/colleges/{adm_school}/admissions",
+            detail=lambda p: (
+                f"total={p.get('total')}  本页 {len(p.get('items', []))} 条  "
+                f"display_deduplicated={p.get('display_deduplicated')}"
+            ),
+        )
+        adm_items = (adm.get("items") or []) if isinstance(adm, dict) else []
+
+    expect_true(
+        "投档记录能返回真实数据",
+        bool(adm_items),
+        f"total={adm.get('total') if isinstance(adm, dict) else '?'}",
+    )
+
+    if adm_items:
+        keys = set(adm_items[0].keys())
+        need = {
+            "source_province",
+            "year",
+            "category",
+            "batch",
+            "subject_req",
+            "min_score",
+            "min_rank",
+            "control_score",
+            "score_diff",
+            "admit_count",
+        }
+        expect_true(
+            "投档记录字段齐全（缺失值应为 null，不填 0）",
+            need <= keys,
+            f"缺 {sorted(need - keys)}" if not need <= keys else f"{len(keys)} 个字段齐全",
+        )
+
+    # ── 招生条件现在应该**真的筛**，既不是 501，也不是静默忽略 ────────
+    rec = adm_items[0] if adm_items else {}
+    cond = {
+        k: rec.get(k)
+        for k in ("source_province", "year", "category")
+        if rec.get(k)
+    }
+
+    filtered = check(
+        f"search 带招生条件 {cond}（取自 school_id={adm_school} 的真实记录）",
+        "POST",
+        "/api/search",
+        {"admission": cond},
+        detail=lambda p: f"total={p.get('total')}  warnings={p.get('warnings')}",
+    )
+    expect_true(
+        "带招生条件真的筛出了高校（不再是 501）",
+        (filtered.get("total") or 0) > 0,
+        f"条件取自真实记录，total 不该是 0，实际 {filtered.get('total')}",
+    )
+
+    # 只留年份当对照：加上生源省/科类后结果必须变窄，否则说明招生条件被忽略了
+    if rec.get("year"):
+        only_year = check(
+            f"search 只按 year={rec.get('year')} 筛（对照）",
+            "POST",
+            "/api/search",
+            {"admission": {"year": rec.get("year")}},
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        expect_true(
+            "加上生源省/科类后结果确实变窄（招生条件真生效）",
+            0 < (filtered.get("total") or 0) <= (only_year.get("total") or 0),
+            f"{filtered.get('total')} <= {only_year.get('total')}",
+        )
+
+    expect_true(
+        "涉及 category 时给出「来源原始口径」提示",
+        "当前科类/批次使用来源数据原始口径" in (filtered.get("warnings") or []),
+        f"warnings={filtered.get('warnings')}",
+    )
+
+    check(
+        "colleges/999999999/admissions 不存在的高校 -> 空列表而非报错",
+        "GET",
+        "/api/colleges/999999999/admissions",
+        detail=lambda p: f"total={p.get('total')}  items={len(p.get('items', []))}",
+    )
 
     server.should_exit = True
     time.sleep(0.5)
