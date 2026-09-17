@@ -41,7 +41,7 @@ export interface CollegeDetail {
   data_availability: {
     campus: boolean;
     school_admission: boolean;
-    enrollment_plan: boolean;
+    major_admission: boolean;
     major_mapping: boolean;
   };
 }

@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { getCollege } from "../api/colleges";
 import type { CollegeDetail } from "../types/college";
 import { useSearchStore } from "../stores/useSearchStore";
+import CollegeMajorAdmissions from "./CollegeMajorAdmissions.vue";
 
 const store = useSearchStore();
 const { selectedCollege } = storeToRefs(store);
@@ -11,6 +12,7 @@ const detail = ref<CollegeDetail | null>(null);
 const loading = ref(false);
 const error = ref("");
 const panel = ref<HTMLElement | null>(null);
+const activeTab = ref<"overview" | "majors">("overview");
 let controller: AbortController | undefined;
 let returnFocus: HTMLElement | null = null;
 async function load(school_id: number) {
@@ -36,8 +38,10 @@ watch(
     if (id === undefined) {
       controller?.abort();
       detail.value = null;
+      activeTab.value = "overview";
       return;
     }
+    activeTab.value = "overview";
     if (previous === undefined)
       returnFocus =
         document.activeElement instanceof HTMLElement
@@ -61,6 +65,7 @@ onBeforeUnmount(() => controller?.abort());
     v-if="selectedCollege"
     ref="panel"
     class="detail-panel"
+    :class="{ 'major-mode': activeTab === 'majors' }"
     tabindex="-1"
     role="region"
     aria-label="高校详情"
@@ -101,42 +106,73 @@ onBeforeUnmount(() => controller?.abort());
           <dd>{{ detail.college.national_code || "未提供" }}</dd>
         </div>
       </dl>
-      <section class="campus-section">
-        <div class="section-title">
-          <h3>校区信息</h3>
-          <span>{{ detail.campuses.length }} 个点位</span>
-        </div>
-        <div v-if="!detail.campuses.length" class="no-campus">
-          <h4>暂无可信校区数据</h4>
-          <p>高校信息仍可正常浏览，地图不会定位到该校。</p>
-        </div>
-        <article
-          v-for="campus in detail.campuses"
-          :key="campus.campus_id"
-          class="campus-card"
+      <nav class="detail-tabs" aria-label="高校详情内容">
+        <button
+          :class="{ active: activeTab === 'overview' }"
+          :aria-selected="activeTab === 'overview'"
+          @click="activeTab = 'overview'"
         >
-          <span
-            class="status-tag"
-            :class="
-              campus.verify_status === 'CONFIRMED' ? 'confirmed' : 'candidate'
-            "
-            >{{
-              campus.verify_status === "CONFIRMED"
-                ? "已核验校区"
-                : "候选校区点，尚未完成实体级人工核验"
-            }}</span
+          高校概览
+        </button>
+        <button
+          :class="{ active: activeTab === 'majors' }"
+          :aria-selected="activeTab === 'majors'"
+          :disabled="!detail.data_availability.major_admission"
+          :title="
+            detail.data_availability.major_admission
+              ? '查看专业录取'
+              : '该校暂无来源专业录取数据'
+          "
+          @click="activeTab = 'majors'"
+        >
+          专业录取
+          <span v-if="!detail.data_availability.major_admission">暂无数据</span>
+        </button>
+      </nav>
+
+      <template v-if="activeTab === 'overview'">
+        <section class="campus-section">
+          <div class="section-title">
+            <h3>校区信息</h3>
+            <span>{{ detail.campuses.length }} 个点位</span>
+          </div>
+          <div v-if="!detail.campuses.length" class="no-campus">
+            <h4>暂无可信校区数据</h4>
+            <p>高校信息仍可正常浏览，地图不会定位到该校。</p>
+          </div>
+          <article
+            v-for="campus in detail.campuses"
+            :key="campus.campus_id"
+            class="campus-card"
           >
-          <h4>{{ campus.campus_name || "校区名称未提供" }}</h4>
-          <p>{{ campus.address || "地址未提供" }}</p>
-          <p class="coordinates">
-            经度 {{ campus.lon?.toFixed(5) ?? "未提供" }} · 纬度
-            {{ campus.lat?.toFixed(5) ?? "未提供" }}
-          </p>
-        </article>
-      </section>
-      <p class="detail-note">
-        校区点位不代表学校全部办学地点。候选点仅供参考，请注意核验状态。
-      </p>
+            <span
+              class="status-tag"
+              :class="
+                campus.verify_status === 'CONFIRMED' ? 'confirmed' : 'candidate'
+              "
+              >{{
+                campus.verify_status === "CONFIRMED"
+                  ? "已核验校区"
+                  : "候选校区点，尚未完成实体级人工核验"
+              }}</span
+            >
+            <h4>{{ campus.campus_name || "校区名称未提供" }}</h4>
+            <p>{{ campus.address || "地址未提供" }}</p>
+            <p class="coordinates">
+              经度 {{ campus.lon?.toFixed(5) ?? "未提供" }} · 纬度
+              {{ campus.lat?.toFixed(5) ?? "未提供" }}
+            </p>
+          </article>
+        </section>
+        <p class="detail-note">
+          校区点位不代表学校全部办学地点。候选点仅供参考，请注意核验状态。
+        </p>
+      </template>
+      <CollegeMajorAdmissions
+        v-else
+        :school-id="detail.college.school_id"
+        :major-mapping-available="detail.data_availability.major_mapping"
+      />
     </template>
   </aside>
 </template>
