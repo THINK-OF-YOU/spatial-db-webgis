@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { getCollege } from "../api/colleges";
 import type { CollegeDetail } from "../types/college";
 import { useSearchStore } from "../stores/useSearchStore";
+import CollegeAdmissions from "./CollegeAdmissions.vue";
 import CollegeMajorAdmissions from "./CollegeMajorAdmissions.vue";
 
 const store = useSearchStore();
@@ -12,7 +13,7 @@ const detail = ref<CollegeDetail | null>(null);
 const loading = ref(false);
 const error = ref("");
 const panel = ref<HTMLElement | null>(null);
-const activeTab = ref<"overview" | "majors">("overview");
+const activeTab = ref<"overview" | "admissions" | "majors">("overview");
 let controller: AbortController | undefined;
 let returnFocus: HTMLElement | null = null;
 async function load(school_id: number) {
@@ -65,7 +66,7 @@ onBeforeUnmount(() => controller?.abort());
     v-if="selectedCollege"
     ref="panel"
     class="detail-panel"
-    :class="{ 'major-mode': activeTab === 'majors' }"
+    :class="{ 'data-mode': activeTab !== 'overview' }"
     tabindex="-1"
     role="region"
     aria-label="高校详情"
@@ -113,6 +114,20 @@ onBeforeUnmount(() => controller?.abort());
           @click="activeTab = 'overview'"
         >
           高校概览
+        </button>
+        <button
+          :class="{ active: activeTab === 'admissions' }"
+          :aria-selected="activeTab === 'admissions'"
+          :disabled="!detail.data_availability.school_admission"
+          :title="
+            detail.data_availability.school_admission
+              ? '查看历史投档'
+              : '该校暂无历史投档数据'
+          "
+          @click="activeTab = 'admissions'"
+        >
+          历史投档
+          <span v-if="!detail.data_availability.school_admission">暂无数据</span>
         </button>
         <button
           :class="{ active: activeTab === 'majors' }"
@@ -168,8 +183,12 @@ onBeforeUnmount(() => controller?.abort());
           校区点位不代表学校全部办学地点。候选点仅供参考，请注意核验状态。
         </p>
       </template>
+      <CollegeAdmissions
+        v-else-if="activeTab === 'admissions'"
+        :school-id="detail.college.school_id"
+      />
       <CollegeMajorAdmissions
-        v-else
+        v-else-if="activeTab === 'majors'"
         :school-id="detail.college.school_id"
         :major-mapping-available="detail.data_availability.major_mapping"
       />

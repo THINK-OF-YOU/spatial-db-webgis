@@ -19,3 +19,8 @@ export type {
   StandardMajorQuery,
 } from './major'
 export type { FilterMeta, FilterMetaResponse } from './meta'
+export type {
+  CollegeAdmissionsPage,
+  CollegeAdmissionsQuery,
+  SchoolAdmissionItem,
+} from './admission'

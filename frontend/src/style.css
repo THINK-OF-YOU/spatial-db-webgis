@@ -458,7 +458,7 @@ label {
   padding: 20px 24px;
   scrollbar-width: thin;
 }
-.detail-panel.major-mode {
+.detail-panel.data-mode {
   width: 680px;
   max-width: 78%;
 }
@@ -521,7 +521,7 @@ label {
 }
 .detail-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-top: 18px;
   padding: 4px;
@@ -949,4 +949,109 @@ label {
 }
 .major-data-notes p + p {
   margin-top: 4px;
+}
+
+.college-admissions {
+  padding: 23px 0 8px;
+}
+.admission-filter-primary,
+.admission-filter-more {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.admission-filter-more {
+  padding-top: 8px;
+}
+.admission-record-list {
+  display: grid;
+  gap: 10px;
+}
+.admission-record {
+  padding: 15px;
+  border: 1px solid #e1e9e2;
+  border-radius: 9px;
+  background: #fff;
+}
+.admission-record-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.admission-record-heading > div:first-child span {
+  color: #84938a;
+  font-size: 10px;
+}
+.admission-record-heading h4 {
+  margin-top: 3px;
+  color: #294f3e;
+  font-size: 16px;
+}
+.admission-vocabulary {
+  min-width: 0;
+  text-align: right;
+}
+.admission-vocabulary strong,
+.admission-vocabulary span {
+  display: block;
+}
+.admission-vocabulary strong {
+  color: #3f6b58;
+  font-size: 11px;
+}
+.admission-vocabulary span {
+  margin-top: 4px;
+  color: #87958d;
+  font-size: 9px;
+}
+.admission-key-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 13px 0 0;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #dfe9e2;
+}
+.admission-key-metrics div {
+  padding: 11px 12px;
+  background: #edf5f0;
+}
+.admission-key-metrics dt {
+  color: #829087;
+  font-size: 9px;
+}
+.admission-key-metrics dd {
+  margin: 4px 0 0;
+  color: #235e49;
+  font-size: 18px;
+  font-weight: 700;
+}
+.admission-more-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 10px 0 0;
+  border-top: 1px solid #e9eee9;
+  border-bottom: 1px solid #e9eee9;
+}
+.admission-more-metrics div {
+  min-width: 0;
+  padding: 9px 6px;
+  border-right: 1px solid #edf1ed;
+  text-align: center;
+}
+.admission-more-metrics div:last-child {
+  border-right: 0;
+}
+.admission-more-metrics dt {
+  color: #8e9a93;
+  font-size: 9px;
+}
+.admission-more-metrics dd {
+  margin: 4px 0 0;
+  color: #315b48;
+  font-size: 11px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
