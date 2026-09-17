@@ -1,12 +1,13 @@
 """通用 College 接口。
 
-所有者：莫炜钧。契约见《任务执行书》§4.2 / §4.3。
+所有者：莫炜钧。契约见《任务执行书》§4.2 / §4.3 / §4.11。
 """
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.common import MAX_PAGE_SIZE, paginate
 from app.services import college_service as svc
+from app.services.spatial_service import TRANSPORT_MODES, nearby_transport
 
 router = APIRouter(tags=["college"])
 
@@ -44,4 +45,46 @@ def get_college(school_id: int):
             "campuses": svc.list_campuses_of(school_id),
             "data_availability": svc.college_availability(school_id),
         }
+    }
+
+
+@router.get("/colleges/{school_id}/transport")
+def college_transport(
+    school_id: int,
+    radius_km: float = Query(3.0, gt=0, le=20, description="搜索半径（km），默认 3，上限 20"),
+    mode: list[str] | None = Query(
+        None, description=f"可重复传，只看这些类型。取值限于 {TRANSPORT_MODES}"
+    ),
+    limit: int = Query(20, ge=1, le=200),
+):
+    """指定高校周边的交通站点（铁路 / 地铁 / 机场）。
+
+    以该校全部带几何的 Campus 为基准点，返回半径内的站点，
+    距离是到**最近**那个校区 的直线距离（geom::geography 测地距离，对外给 km）。
+
+    站点名以 OSM 原名 name 为准；name_zh 大量缺失（rail 33%、metro 43%），
+    缺失时返回 null，不推算、不用别的值填充。
+
+    数据来自 OpenStreetMap，**ODbL 许可**，界面与导出须署名
+    © OpenStreetMap contributors。
+    """
+    # 不在库里、但契约写死的值一律 422 挡掉，免得前端传错值被静默忽略
+    bad = sorted(set(mode or []) - set(TRANSPORT_MODES))
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode 只允许 {TRANSPORT_MODES}，收到非法值 {bad}",
+        )
+
+    items, warnings = nearby_transport(
+        school_id=school_id,
+        radius_km=radius_km,
+        modes=mode,
+        limit=limit,
+    )
+
+    return {
+        "items": items,
+        "total": len(items),
+        "warnings": warnings,
     }

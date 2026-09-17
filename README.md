@@ -13,6 +13,7 @@ PostgreSQL / PostGIS → FastAPI → Vue 3 + Leaflet
 
 - 高校列表 / 搜索 / 详情
 - 按生源省、年份、科类、批次查历史投档
+- 高校周边交通站点（铁路 / 地铁 / 机场，直线距离）
 - Campus 与行政区上 Leaflet 地图，CONFIRMED / CANDIDATE 区分
 - 参考点 + 半径、Polygon 空间选区（PostGIS `ST_DWithin` / `ST_Distance`）
 
@@ -93,7 +94,7 @@ cd backend
 .venv\Scripts\python.exe smoke_test.py
 ```
 
-脚本自带服务（临时占用 8123 端口），把 9 个接口挨个实打一遍，
+脚本自带服务（临时占用 8123 端口），把 10 个接口挨个实打一遍，
 并断言返回内容本身（不只是状态码）。全 OK 才动手。
 
 > Windows 控制台是 GBK。用 psql 跑含中文的 SQL 时先 `chcp 65001`，
@@ -147,6 +148,11 @@ npm run dev
 ## 已知限制（照实写，不掩盖）
 
 - Campus 432 点，仅覆盖 2,952 所 College 的 14.63%；其中 `CONFIRMED` 仅 4 个。
+  且这 432 点分属 432 所不同高校，**每校最多 1 个带几何的校区**——所以"多校区取最近"
+  那条路径目前走不到，别当成已测。
+- `poi_transport` 约 1.9 万 POI，覆盖不齐：metro 只覆盖 29 省，`name_zh` 约 2/3 缺失。
+  抽样 200 个校区，仅 73% 能在 3 km 内找到交通点——**"查不到"是常见情况**，
+  接口用 `warnings` 区分"缺校区"与"缺交通数据"，前端不得显示成"周边没有站点"。
 - 专业语义链（Expression / Group / Map）当前为空，V1 **不提供专业录取与专业组筛选**。
 - `category` / `batch` 是来源原始口径，未做全国统一标准化。
 - `college.reg_province` 实际存的是**市**名，不是省名。

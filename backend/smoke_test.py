@@ -8,6 +8,7 @@
 - 只读。不改任何数据；连接本身被服务端强制为 default_transaction_read_only=on。
 - 自带服务：在 127.0.0.1:8123 起一个临时 uvicorn，跑完自动退出，不用另开终端。
 - 组员拿到仓库后先跑这个，确认自己本机的 .env / 数据库通了再写业务代码。
+- 断言的是**返回内容**，不只是状态码。凡是"接口通了但内容不对"的情况都要红。
 
 退出码：0 = 全部通过，1 = 有失败项。
 """
@@ -313,6 +314,192 @@ def main() -> int:
     )
 
     # 招生条件不再单独在这里测 501 —— 倪嵩实现后见下一节的真实筛选检查。
+
+    print()
+    print("=" * 68)
+    print("莫炜钧：10 周边交通（API 10，契约 §4.11）")
+    print("=" * 68)
+
+    # 三所高校是照库里实测结果挑的，不是随手写的（2026-09-17 实测）：
+    #   3059 天津医科大学            1 个校区，3km 内 39 个站点（metro 38 + rail 1）
+    #   2954 盐城幼儿师范高等专科学校  1 个校区，3km 内 0 个站点
+    #   4687 华中师范大学            压根没有带几何的校区
+    # 注意 3059 那一行：默认 limit=20，所以下面的 base 只会拿到 20 条而不是 39 条，
+    # 拿它当"筛窄了"的对照基准没问题。
+    HAS_STATION, NO_STATION, NO_CAMPUS = 3059, 2954, 4687
+
+    # 抄自契约 §4.11。**故意不从 spatial_service 里 import**——
+    # 否则常量被改错时测试会跟着一起错，等于没测。
+    CONTRACT_MODES = ["rail", "metro", "airport", "rail_halt"]
+
+    base = check(
+        f"colleges/{HAS_STATION}/transport 默认 3km",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport",
+        detail=lambda p: (
+            f"{len(p.get('items', []))} 个站点  total={p.get('total')}  "
+            f"warnings={p.get('warnings')}"
+        ),
+    )
+    base_items = (base.get("items") or []) if isinstance(base, dict) else []
+
+    expect_true(
+        "周边交通真的返回了站点",
+        bool(base_items),
+        f"{len(base_items)} 个站点",
+    )
+
+    if base_items:
+        keys = set(base_items[0].keys())
+        need = {
+            "poi_id",
+            "mode",
+            "name",
+            "name_zh",
+            "lon",
+            "lat",
+            "distance_km",
+            "campus_id",
+            "campus_name",
+        }
+        expect_true(
+            "交通站点字段齐全（缺失值应为 null，不填假值）",
+            need <= keys,
+            f"缺 {sorted(need - keys)}" if not need <= keys else f"{len(keys)} 个字段齐全",
+        )
+
+        dists = [it.get("distance_km") for it in base_items]
+        expect_true(
+            "按距离升序排",
+            all(d is not None for d in dists) and dists == sorted(dists),
+            f"最近 {dists[0]} km，最远 {dists[-1]} km",
+        )
+        expect_true(
+            "返回的站点都在请求半径内",
+            all((d or 0) <= 3.0 for d in dists),
+            f"{len(base_items)} 个站点全部 <= 3 km",
+        )
+        expect_true(
+            "mode 取值都在契约的四个值之内",
+            {it.get("mode") for it in base_items} <= set(CONTRACT_MODES),
+            f"出现的 mode：{sorted({it.get('mode') for it in base_items})}",
+        )
+        expect_true(
+            "total 与 items 长度一致",
+            base.get("total") == len(base_items),
+            f"total={base.get('total')}  len={len(base_items)}",
+        )
+        expect_true(
+            "查到了站点就不该报「缺少交通设施数据」",
+            "部分高校周边缺少交通设施数据" not in (base.get("warnings") or []),
+            f"warnings={base.get('warnings')}",
+        )
+
+    # ── mode 过滤：既要真的只剩这一种，也要真的变少 ────────────────
+    rail = check(
+        f"transport mode=rail（可重复传）",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport?mode=rail",
+        detail=lambda p: (
+            f"{len(p.get('items', []))} 个站点  "
+            f"modes={sorted({i.get('mode') for i in (p.get('items') or [])})}"
+        ),
+    )
+    rail_items = (rail.get("items") or []) if isinstance(rail, dict) else []
+    expect_true(
+        "mode=rail 只返回 rail",
+        bool(rail_items) and {i.get("mode") for i in rail_items} == {"rail"},
+        f"{len(rail_items)} 个站点",
+    )
+    expect_true(
+        "mode 过滤确实把结果筛窄了（不是被静默忽略）",
+        0 < len(rail_items) < len(base_items),
+        f"{len(rail_items)} < {len(base_items)}",
+    )
+
+    # ── radius_km：收窄后条数变少，且没有超出半径的漏网之鱼 ──────────
+    closer = check(
+        "transport radius_km=1",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport?radius_km=1",
+        detail=lambda p: (
+            f"{len(p.get('items', []))} 个站点  "
+            f"最远 {max((i.get('distance_km') or 0) for i in (p.get('items') or [])) if p.get('items') else '-'} km"
+        ),
+    )
+    closer_items = (closer.get("items") or []) if isinstance(closer, dict) else []
+    expect_true(
+        "radius_km 收窄后条数变少，且都在 1 km 内",
+        0 < len(closer_items) < len(base_items)
+        and all((i.get("distance_km") or 0) <= 1.0 for i in closer_items),
+        f"{len(closer_items)} 个站点（3km 时 {len(base_items)} 个）",
+    )
+
+    # ── limit ────────────────────────────────────────────────────
+    capped = check(
+        "transport limit=3",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport?limit=3",
+        detail=lambda p: f"{len(p.get('items', []))} 个站点",
+    )
+    expect_true(
+        "limit 生效",
+        len((capped.get("items") or []) if isinstance(capped, dict) else []) == 3,
+        f"要 3 个，给了 {len((capped.get('items') or []) if isinstance(capped, dict) else [])} 个",
+    )
+
+    # ── 参数校验：契约写死的取值范围，越界一律 422 ───────────────────
+    check(
+        "transport mode 非法值 -> 422",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport?mode=train",
+        expect=422,
+    )
+    check(
+        "transport radius_km 超上限 20 -> 422",
+        "GET",
+        f"/api/colleges/{HAS_STATION}/transport?radius_km=25",
+        expect=422,
+    )
+
+    # ── 两种"查不到"必须分开说，不能混成一句 ─────────────────────────
+    no_campus = check(
+        f"colleges/{NO_CAMPUS}/transport 没有校区",
+        "GET",
+        f"/api/colleges/{NO_CAMPUS}/transport",
+        detail=lambda p: f"items={len(p.get('items', []))}  warnings={p.get('warnings')}",
+    )
+    no_station = check(
+        f"colleges/{NO_STATION}/transport 有校区但半径内没站点",
+        "GET",
+        f"/api/colleges/{NO_STATION}/transport",
+        detail=lambda p: f"items={len(p.get('items', []))}  warnings={p.get('warnings')}",
+    )
+
+    nc_warn = (no_campus.get("warnings") or []) if isinstance(no_campus, dict) else []
+    ns_warn = (no_station.get("warnings") or []) if isinstance(no_station, dict) else []
+
+    expect_true(
+        "无校区时给「暂无可用校区」提示",
+        "该校暂无可用校区数据，无法进行周边查询" in nc_warn,
+        f"warnings={nc_warn}",
+    )
+    expect_true(
+        "有校区无站点时给「缺少交通设施数据」提示",
+        "部分高校周边缺少交通设施数据" in ns_warn,
+        f"warnings={ns_warn}",
+    )
+    expect_true(
+        "两种「查不到」的文案确实不同（缺校区没被错说成缺交通数据）",
+        set(nc_warn) != set(ns_warn) and bool(nc_warn) and bool(ns_warn),
+        f"缺校区 {nc_warn}  vs  缺站点 {ns_warn}",
+    )
+    expect_true(
+        "查不到时不谎报站点",
+        not ((no_campus.get("items") if isinstance(no_campus, dict) else None) or [])
+        and not ((no_station.get("items") if isinstance(no_station, dict) else None) or []),
+        "两种情况 items 都是空数组",
+    )
 
     print()
     print("=" * 68)

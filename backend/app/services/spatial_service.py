@@ -7,12 +7,22 @@
 """
 
 from app.db.pool import get_cursor
-from app.warnings import INCLUDE_CANDIDATE_CAMPUS, dedupe
+from app.warnings import (
+    INCLUDE_CANDIDATE_CAMPUS,
+    NO_CAMPUS_FOR_QUERY,
+    NO_TRANSPORT_DATA,
+    dedupe,
+)
 
 # §3.3 冻结：附近高校**默认只使用 CONFIRMED**，用户主动开启后才纳入 CANDIDATE。
 DEFAULT_VERIFY_STATUSES = ["CONFIRMED"]
 
 ALL_VERIFY_STATUSES = ["CONFIRMED", "CANDIDATE"]
+
+# poi_transport.mode 的库内真实取值（2026-09-17 实测，全部 18,996 行）：
+# rail 10,687 / metro 7,792 / airport 329 / rail_halt 188。
+# 契约 §4.11 把它写死成这四个值——不接受别的，免得前端传了错值被静默忽略。
+TRANSPORT_MODES = ["rail", "metro", "airport", "rail_halt"]
 
 
 def resolve_verify_status(raw: list[str] | None) -> list[str]:
@@ -126,6 +136,108 @@ def within(
     warnings: list[str] = []
     if "CANDIDATE" in statuses:
         warnings.append(INCLUDE_CANDIDATE_CAMPUS)
+
+    return rows, dedupe(warnings)
+
+
+def nearby_transport(
+    school_id: int,
+    radius_km: float = 3.0,
+    modes: list[str] | None = None,
+    limit: int = 20,
+) -> tuple[list[dict], list[str]]:
+    """指定高校周边的交通站点。返回 (items, warnings)。
+
+    数据链 College → Campus → poi_transport（§4.11）。基准点是该校**全部**带几何的
+    Campus，每个站点只保留到**最近**那个 Campus 的距离，并按这个距离升序。
+
+    距离用 geom::geography 算米制测地距离，对外给 km —— 与 nearby() 同一套口径。
+
+    取"最近校区"用的是 KNN（`<->`）定候选 + geography 定精确距离：`<->` 在 geometry
+    上是按度比的，直接拿它当距离会挑错，只能用来挑候选。
+    **注意：当前库里 432 个带几何的 Campus 分属 432 所不同高校，每校最多 1 个**
+    （2026-09-17 实测），所以这条 lateral 现在永远只命中那一个校区——
+    也就是说"多校区取最近"这条路径**目前没有被数据走到**，是照着校区数据将来变多
+    写的。别以为它被测过。
+
+    `env` 那层是必要的：poi_transport 有 18,996 行，不加 bbox 预筛的话 lateral 要跑
+    18,996 次，实测 1.2 s；加上之后走 idx_poi_transport_geom 的 GiST 索引，
+    同样结果 64 ms。度→米的换算按校区里**最大纬度**取 cos，宁可框大一点，
+    也不漏掉真命中的点（框大只是多算几行，框小会丢数据）。
+    """
+    radius_m = radius_km * 1000.0
+
+    with get_cursor() as cur:
+        # 先看这所学校到底有没有可用校区 —— 没有的话是另一回事，不能混报
+        cur.execute(
+            """
+            select count(*) as n
+            from campus
+            where school_id = %(school_id)s and geom is not null
+            """,
+            {"school_id": school_id},
+        )
+        if cur.fetchone()["n"] == 0:
+            return [], dedupe([NO_CAMPUS_FOR_QUERY])
+
+        cur.execute(
+            """
+            with base as (
+                select cp.campus_id, cp.campus_name, cp.geom
+                from campus cp
+                where cp.school_id = %(school_id)s
+                  and cp.geom is not null
+            ),
+            env as (
+                select st_expand(
+                           st_envelope(st_collect(geom)),
+                           %(radius_m)s / 111320.0
+                             / greatest(cos(radians(max(abs(st_y(geom))))), 0.01)
+                       ) as box
+                from base
+            )
+            select p.poi_id,
+                   p.mode,
+                   p.name,
+                   p.name_zh,
+                   st_x(p.geom) as lon,
+                   st_y(p.geom) as lat,
+                   near.campus_id,
+                   near.campus_name,
+                   near.distance_m
+            from poi_transport p
+            cross join env
+            cross join lateral (
+                select b.campus_id,
+                       b.campus_name,
+                       st_distance(p.geom::geography, b.geom::geography) as distance_m
+                from base b
+                order by b.geom <-> p.geom
+                limit 1
+            ) near
+            where p.geom && env.box
+              and (%(modes)s is null or p.mode = any(%(modes)s))
+              and near.distance_m <= %(radius_m)s
+            order by near.distance_m, p.poi_id
+            limit %(limit)s
+            """,
+            {
+                "school_id": school_id,
+                "modes": modes or None,
+                "radius_m": radius_m,
+                "limit": max(1, min(limit, 200)),
+            },
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    for r in rows:
+        r["distance_km"] = round(r.pop("distance_m") / 1000.0, 2)
+
+    warnings: list[str] = []
+    if not rows:
+        # 有校区但半径内没有站点——poi_transport 覆盖不齐，这是常态。
+        # 必须说清楚，不能让前端把"查不到"显示成"周边没有站点"。
+        warnings.append(NO_TRANSPORT_DATA)
 
     return rows, dedupe(warnings)
 
