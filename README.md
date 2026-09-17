@@ -111,7 +111,7 @@ cd backend
 .venv\Scripts\python.exe smoke_test.py
 ```
 
-脚本自带服务（临时占用 8123 端口），把 10 个接口挨个实打一遍，
+脚本自带服务（临时占用 8123 端口），把 13 个接口挨个实打一遍，
 并断言返回内容本身（不只是状态码）。全 OK 才动手。
 
 > Windows 控制台是 GBK。用 psql 跑含中文的 SQL 时先 `chcp 65001`，
