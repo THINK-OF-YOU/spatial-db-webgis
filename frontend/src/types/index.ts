@@ -5,6 +5,11 @@ export type {
   DrawnGeometry,
   SearchFilters,
   SearchResult,
+  AdmissionSearchCondition,
+  CollegeSearchCondition,
+  SpatialSearchCondition,
+  SearchRequest,
+  SearchResponse,
   SearchState,
 } from './search'
 export type { College, CollegeDetail, CollegeFilters, CollegeQuery, CollegePage } from './college'
