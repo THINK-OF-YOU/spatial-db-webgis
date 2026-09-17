@@ -161,15 +161,9 @@ onBeforeUnmount(() => controller?.abort());
             class="campus-card"
           >
             <span
-              class="status-tag"
-              :class="
-                campus.verify_status === 'CONFIRMED' ? 'confirmed' : 'candidate'
-              "
-              >{{
-                campus.verify_status === "CONFIRMED"
-                  ? "已核验校区"
-                  : "候选校区点，尚未完成实体级人工核验"
-              }}</span
+              v-if="campus.verify_status === 'CONFIRMED'"
+              class="status-tag confirmed"
+              >已核验</span
             >
             <h4>{{ campus.campus_name || "校区名称未提供" }}</h4>
             <p>{{ campus.address || "地址未提供" }}</p>
@@ -180,7 +174,7 @@ onBeforeUnmount(() => controller?.abort());
           </article>
         </section>
         <p class="detail-note">
-          校区点位不代表学校全部办学地点。候选点仅供参考，请注意核验状态。
+          校区坐标主要用于空间查询参考，部分点位尚未完成人工核验。
         </p>
       </template>
       <CollegeAdmissions

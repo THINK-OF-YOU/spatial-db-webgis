@@ -15,11 +15,13 @@ export interface CampusProps {
 export type CampusFeature = Feature<Point, CampusProps>
 
 /** /api/map/regions 的 feature properties（契约 §4.7）。 */
+export type RegionLevel = 'province' | 'city' | 'district'
+
 export interface RegionProps {
   adcode: string
   name: string
-  level: string
-  parent_adcode: string
+  level: RegionLevel
+  parent_adcode: string | null
   children_num: number
 }
 

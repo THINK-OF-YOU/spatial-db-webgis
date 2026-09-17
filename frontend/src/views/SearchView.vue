@@ -174,7 +174,7 @@ function describeIntegrated(request: IntegratedRequest) {
       ? `参考点半径：${request.spatial.radius_km ?? "未设"} km`
       : "",
     request.spatial?.geometry ? "已绘制 Polygon" : "",
-    request.spatial?.include_candidate_campus ? "包含候选校区" : "",
+    request.spatial?.include_candidate_campus ? "包含参考校区点" : "",
   ].filter(Boolean);
   return parts.join(" / ") || "全部高校";
 }
@@ -194,6 +194,12 @@ function validateIntegratedDraft() {
   }
   formError.value = "";
   return true;
+}
+
+function displayWarning(warning: string) {
+  return warning === "本次空间查询包含候选校区"
+    ? "本次空间查询使用了尚未完成最终人工核验的参考校区点"
+    : warning;
 }
 
 async function load(nextPage = 1) {
@@ -530,8 +536,8 @@ void load();
               <label class="candidate-toggle">
                 <input v-model="campusStatus" type="checkbox" />
                 <span>
-                  <strong>允许候选校区参与空间查询</strong>
-                  <small>候选校区点尚未完成实体级人工核验</small>
+                  <strong>允许参考校区点参与空间查询</strong>
+                  <small>部分点位尚未完成人工核验</small>
                 </span>
               </label>
             </div>
@@ -577,7 +583,7 @@ void load();
         </div>
         <div ref="list" class="college-list" :aria-busy="loading">
           <p v-for="warning in warnings" :key="warning" class="business-warning">
-            {{ warning }}
+            {{ displayWarning(warning) }}
           </p>
           <div v-if="loading" class="state-message" role="status">
             <span class="loading-ring" />正在查找高校…
@@ -659,7 +665,7 @@ void load();
         </div>
         <div class="map-host"><slot name="map" /></div>
         <div class="map-footnote">
-          <span>地图展示有坐标的校区；没有校区数据的高校仍可参与非空间查询。</span>
+          <span>校区坐标主要用于空间查询参考，部分点位尚未完成人工核验；无校区数据的高校仍可参与非空间查询。</span>
           <span v-if="hasSpatialConditions" class="spatial-note">
             {{
               hasDirectoryExclusiveConditions

@@ -27,7 +27,7 @@ const items: { key: DrawMode; label: string; title: string }[] = [
     >
       {{ it.label }}
     </button>
-    <button type="button" class="clear" title="清除空间条件（参考点 / 半径 / 绘制）" @click="emit('clear')">
+    <button type="button" class="clear" title="清除空间条件（行政区 / 参考点 / 半径 / 绘制）" @click="emit('clear')">
       清除空间
     </button>
   </div>

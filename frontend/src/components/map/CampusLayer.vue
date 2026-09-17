@@ -13,10 +13,10 @@ const { selectedCollege, results } = storeToRefs(store)
 
 const error = ref('')
 
-// 冻结文案（协作规范 §5.4）
+// API 状态不变；这里只调整面向用户的低干扰文案。
 const STATUS_TEXT: Record<CampusStatus, string> = {
-  CONFIRMED: '已核验校区',
-  CANDIDATE: '候选校区点，尚未完成实体级人工核验',
+  CONFIRMED: '已核验',
+  CANDIDATE: '参考校区点',
 }
 
 interface MarkerRec {

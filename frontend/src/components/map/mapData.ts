@@ -7,6 +7,7 @@ import type {
   CampusStatus,
   NearbyResponse,
   RegionProps,
+  RegionLevel,
   WithinResponse,
 } from './types'
 
@@ -42,10 +43,30 @@ export async function loadCampuses(): Promise<FeatureCollection<Point, CampusPro
   return get<FeatureCollection<Point, CampusProps>>('/map/campuses')
 }
 
-/** /api/map/regions：默认 province 级。 */
-export async function loadRegions(): Promise<FeatureCollection<Polygon | MultiPolygon, RegionProps>> {
-  if (USE_MOCK) return regionsFC
-  return get<FeatureCollection<Polygon | MultiPolygon, RegionProps>>('/map/regions?simplify=0.01')
+export interface RegionQuery {
+  level?: RegionLevel
+  parentAdcode?: string
+  simplify?: number
+}
+
+/** /api/map/regions：支持省级入口与 parent_adcode 真实下钻。 */
+export async function loadRegions(
+  query: RegionQuery = {},
+): Promise<FeatureCollection<Polygon | MultiPolygon, RegionProps>> {
+  const level = query.level ?? (query.parentAdcode ? undefined : 'province')
+  if (USE_MOCK) {
+    const features = regionsFC.features.filter((feature) => {
+      if (query.parentAdcode) return feature.properties.parent_adcode === query.parentAdcode
+      return !level || feature.properties.level === level
+    })
+    return { type: 'FeatureCollection', features }
+  }
+  const params = new URLSearchParams({ simplify: String(query.simplify ?? 0.01) })
+  if (level) params.set('level', level)
+  if (query.parentAdcode) params.set('parent_adcode', query.parentAdcode)
+  return get<FeatureCollection<Polygon | MultiPolygon, RegionProps>>(
+    `/map/regions?${params.toString()}`,
+  )
 }
 
 /** /api/spatial/nearby：参考点 + 半径。默认只用 CONFIRMED（契约 §3.3）。 */

@@ -2,8 +2,9 @@
 
 <template>
   <div class="map-legend">
-    <div class="item"><span class="dot confirmed"></span><span>已核验校区</span></div>
-    <div class="item"><span class="dot candidate"></span><span>候选校区点，尚未完成实体级人工核验</span></div>
+    <div class="item"><span class="dot confirmed"></span><span>已核验</span></div>
+    <div class="item"><span class="dot candidate"></span><span>参考校区点</span></div>
+    <p>部分点位尚未完成人工核验</p>
   </div>
 </template>
 
@@ -26,6 +27,11 @@
   align-items: center;
   gap: 8px;
   line-height: 20px;
+}
+.map-legend p {
+  margin: 4px 0 0;
+  color: #7d8982;
+  font-size: 10px;
 }
 .dot {
   width: 12px;
