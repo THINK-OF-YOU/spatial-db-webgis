@@ -11,7 +11,7 @@ app/services/admission_service.py。契约见《任务执行书》§4.10。
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.db.pool import get_cursor
@@ -95,17 +95,16 @@ def search(req: SearchRequest):
     # ── 招生条件：交给倪嵩的 service，本接口不写第二套招生 SQL ──────────
     admission_ids: list[int] | None = None
     if req.admission:
-        try:
-            admission_ids = admission_service.filter_school_ids(
-                source_province=req.admission.source_province,
-                year=req.admission.year,
-                category=req.admission.category,
-                batch=req.admission.batch,
-            )
-        except admission_service.AdmissionFilterNotImplemented as exc:
-            # 不静默忽略招生条件——那会返回"看起来筛过了其实没筛"的结果，
-            # 比报错更糟。
-            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        # 倪嵩的 service 已实现（2026-09-17）。骨架阶段这里捕获
+        # AdmissionFilterNotImplemented 返回 501，是为了不返回"看起来筛过了
+        # 其实没筛"的结果；该异常类已随实现一起移除，所以这里不再兜底——
+        # 真出错就走 500，不假装成功。
+        admission_ids = admission_service.filter_school_ids(
+            source_province=req.admission.source_province,
+            year=req.admission.year,
+            category=req.admission.category,
+            batch=req.admission.batch,
+        )
 
         if req.admission.category or req.admission.batch:
             warnings.append(SOURCE_VOCABULARY)
@@ -136,15 +135,25 @@ def search(req: SearchRequest):
             )
             params["s_geojson"] = json.dumps(spatial.geometry, ensure_ascii=False)
 
-        if spatial.reference_point and spatial.radius_km:
-            predicates.append(
-                "st_dwithin(cp.geom::geography,"
-                " st_setsrid(st_makepoint(%(s_lon)s, %(s_lat)s), 4326)::geography,"
-                " %(s_radius_m)s)"
-            )
+        if spatial.reference_point:
+            # s_lon / s_lat 一旦给了参考点就必须绑定：下面的 distance_select 与
+            # distance_join 只依赖 reference_point，**不依赖 radius_km**。
+            # 原先这两个参数只在「reference_point 且 radius_km」分支里绑定，
+            # 于是「只给参考点、不给半径」会 KeyError: 's_lon' 直接 500。
             params["s_lon"] = spatial.reference_point.lon
             params["s_lat"] = spatial.reference_point.lat
-            params["s_radius_m"] = spatial.radius_km * 1000.0
+
+            # 半径只决定**是否过滤**。只给参考点不给半径 → 不筛，只报距离。
+            # 契约 §4.10 的示例两者成对出现，未规定单独给参考点的语义；
+            # 这里取不会让调用方踩空的宽松解释，真要改成 422 属于契约澄清，
+            # 需全组确认后再收紧。
+            if spatial.radius_km:
+                predicates.append(
+                    "st_dwithin(cp.geom::geography,"
+                    " st_setsrid(st_makepoint(%(s_lon)s, %(s_lat)s), 4326)::geography,"
+                    " %(s_radius_m)s)"
+                )
+                params["s_radius_m"] = spatial.radius_km * 1000.0
 
     spatial_enabled = bool(predicates)
 

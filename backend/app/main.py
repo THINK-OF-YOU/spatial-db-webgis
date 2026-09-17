@@ -55,10 +55,11 @@ app.add_middleware(
 )
 
 # ── 路由注册 ────────────────────────────────────────────────────────
-# 一次注册好全部 9 个接口，谁的文件谁实现，不要来这里加路由。
+# 一次注册好全部 10 个接口，谁的文件谁实现，不要来这里加路由。
+# API 10（周边交通）挂在 colleges.router 上，所以这里没有新增一行。
 API_PREFIX = "/api"
 
-app.include_router(colleges.router, prefix=API_PREFIX)   # 莫炜钧  1, 2
+app.include_router(colleges.router, prefix=API_PREFIX)   # 莫炜钧  1, 2, 10
 app.include_router(map.router, prefix=API_PREFIX)        # 莫炜钧  5, 6
 app.include_router(spatial.router, prefix=API_PREFIX)    # 莫炜钧  7, 8
 app.include_router(search.router, prefix=API_PREFIX)     # 莫炜钧  9（总集成）
