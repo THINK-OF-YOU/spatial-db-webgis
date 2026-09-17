@@ -180,13 +180,16 @@ function describeIntegrated(request: IntegratedRequest) {
 }
 
 function validateIntegratedDraft() {
+  const radius = radiusKm.value;
   if (
     referencePoint.value &&
-    (radiusKm.value === null ||
-      radiusKm.value <= 0 ||
-      radiusKm.value > 2000)
+    (radius === null ||
+      !Number.isInteger(radius) ||
+      radius < 10 ||
+      radius > 2000 ||
+      radius % 10 !== 0)
   ) {
-    formError.value = "设置参考点后，请输入 0～2000 km 范围内的查询半径。";
+    formError.value = "设置参考点后，请输入 10～2000 km 且为 10 的倍数。";
     return false;
   }
   formError.value = "";
@@ -401,7 +404,7 @@ void load();
             </p>
           </div>
 
-          <details class="integrated-filters">
+          <details class="integrated-filters" open>
             <summary>
               <span>招生与空间条件</span>
               <span v-if="comprehensiveConditionCount" class="condition-count">
@@ -515,7 +518,7 @@ void load();
                 <input
                   id="radius-km"
                   type="number"
-                  min="0.1"
+                  min="10"
                   max="2000"
                   step="10"
                   :value="radiusKm ?? ''"

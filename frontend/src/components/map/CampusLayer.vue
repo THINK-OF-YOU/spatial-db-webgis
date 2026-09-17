@@ -103,7 +103,17 @@ function updateResults() {
   for (const rec of records) {
     const dim = active && !ids.has(rec.schoolId)
     const base = styleFor(rec.status)
-    rec.marker.setStyle({ ...base, fillOpacity: dim ? (base.fillOpacity ?? 1) * 0.2 : base.fillOpacity })
+    rec.marker.setStyle(
+      dim
+        ? {
+            ...base,
+            color: '#cbd5e1',
+            opacity: 0.25,
+            fillOpacity: 0.06,
+            weight: 1,
+          }
+        : { ...base, opacity: 1, fillOpacity: base.fillOpacity, weight: 2 },
+    )
   }
 }
 watch(resultIds, updateResults)
