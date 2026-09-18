@@ -21,9 +21,9 @@ category 17 个值、batch 174 个值；college.edu_level 只有两个值。
 ────────────────────────────────────────────────────────────────
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
-from app.services import admission_service
+from app.services import admission_service, score_range_service
 from app.warnings import SOURCE_VOCABULARY, dedupe
 
 router = APIRouter(tags=["meta"])
@@ -44,3 +44,40 @@ def meta_filters():
         "data": meta,
         "warnings": warnings,
     }
+
+
+@router.get("/meta/candidate-profile-contexts")
+def candidate_profile_contexts():
+    """返回存在有效最低位次事实的 CandidateProfile 考试上下文。"""
+    contexts = admission_service.candidate_profile_contexts()
+    return {
+        "data": {"contexts": contexts},
+        "warnings": dedupe([SOURCE_VOCABULARY]),
+    }
+
+
+@router.get("/meta/score-range-contexts")
+def score_range_contexts():
+    """返回可用于精确分数解析的 ScoreRange 考试上下文。"""
+    contexts = score_range_service.score_range_contexts()
+    return {
+        "data": {"contexts": contexts},
+        "warnings": dedupe([SOURCE_VOCABULARY]),
+    }
+
+
+@router.get("/meta/score-range/resolve")
+def resolve_score_rank(
+    source_province: str = Query(..., min_length=1),
+    year: int = Query(..., ge=2000, le=2100),
+    category: str = Query(..., min_length=1),
+    score: int = Query(..., ge=0),
+):
+    """把精确分数解析为一分一段累计人数（参考位次）。"""
+    result = score_range_service.resolve_score_rank(
+        source_province=source_province,
+        year=year,
+        category=category,
+        score=score,
+    )
+    return {"data": result, "warnings": dedupe([SOURCE_VOCABULARY])}

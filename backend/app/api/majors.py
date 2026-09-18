@@ -45,6 +45,11 @@ def college_majors(
     year: int | None = Query(None, ge=2000, le=2100, description="年份，如 2024"),
     category: str | None = Query(None, description="科类/选科，来源原始口径，如 理科"),
     batch: str | None = Query(None, description="批次，来源原始口径，如 本科一批"),
+    candidate_rank: int | None = Query(
+        None,
+        ge=1,
+        description="考生位次。提供后按 expr_id 返回当前考试上下文中最接近位次的代表事实。",
+    ),
     std_major_id: int | None = Query(
         None,
         description="按标准专业筛选。⚠️ 只覆盖已建立 Tier 1 映射的记录（37.80%），"
@@ -70,12 +75,21 @@ def college_majors(
             detail=f"mapping 只允许 {list(MAPPING_VALUES)}，收到 {mapping!r}",
         )
 
+    if candidate_rank is not None and (
+        not source_province or year is None or not category
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="candidate_rank 模式必须同时提供 source_province、year、category",
+        )
+
     items, total, display_deduplicated, no_name = major_service.list_college_majors(
         school_id=school_id,
         source_province=source_province,
         year=year,
         category=category,
         batch=batch,
+        candidate_rank=candidate_rank,
         std_major_id=std_major_id,
         mapping=mapping,
         q=q,
@@ -99,6 +113,18 @@ def college_majors(
     # 不放进 warnings[]：那是全组冻结的文案表，且这里要的是一个**数字**，
     # 前端可以自己组织句子（「另有 46 条录取记录来源未提供专业名」）。
     result["facts_without_major_name"] = no_name
+    result["candidate_profile_applied"] = candidate_rank is not None
+    result["candidate_profile"] = (
+        {
+            "source_province": source_province,
+            "year": year,
+            "category": category,
+            "batch": batch,
+            "rank": candidate_rank,
+        }
+        if candidate_rank is not None
+        else None
+    )
     return result
 
 

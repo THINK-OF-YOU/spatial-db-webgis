@@ -10,6 +10,7 @@ import type {
   RegionLevel,
   WithinResponse,
 } from './types'
+import type { MapBounds } from '../../types/search'
 
 /**
  * 地图数据访问层。
@@ -25,8 +26,8 @@ const WARN_CANDIDATE = '本次空间查询包含候选校区'
 const campusesFC = JSON.parse(campusesRaw) as FeatureCollection<Point, CampusProps>
 const regionsFC = JSON.parse(regionsRaw) as FeatureCollection<Polygon | MultiPolygon, RegionProps>
 
-async function get<T>(path: string): Promise<T> {
-  return request<T>(path)
+async function get<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return request<T>(path, init)
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -37,10 +38,23 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
-/** /api/map/campuses：浏览态同时返回 CONFIRMED 与 CANDIDATE。 */
-export async function loadCampuses(): Promise<FeatureCollection<Point, CampusProps>> {
-  if (USE_MOCK) return campusesFC
-  return get<FeatureCollection<Point, CampusProps>>('/map/campuses')
+/** /api/map/campuses：按当前视野加载，浏览态同时返回 CONFIRMED 与 CANDIDATE。 */
+export async function loadCampuses(
+  bbox: MapBounds,
+  signal?: AbortSignal,
+): Promise<FeatureCollection<Point, CampusProps>> {
+  if (USE_MOCK) {
+    const features = campusesFC.features.filter((feature) => {
+      const [lon, lat] = feature.geometry.coordinates
+      return lon >= bbox.west && lon <= bbox.east && lat >= bbox.south && lat <= bbox.north
+    })
+    return { type: 'FeatureCollection', features }
+  }
+  const bboxValue = [bbox.west, bbox.south, bbox.east, bbox.north].join(',')
+  const params = new URLSearchParams({ bbox: bboxValue })
+  return get<FeatureCollection<Point, CampusProps>>(`/map/campuses?${params.toString()}`, {
+    signal,
+  })
 }
 
 export interface RegionQuery {

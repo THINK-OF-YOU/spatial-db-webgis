@@ -117,7 +117,7 @@ def _major_item(row: dict) -> dict:
     def _f(v):
         return float(v) if v is not None else None
 
-    return {
+    item = {
         "raw_major_name": row["raw_major_name"],
         "norm_name": row["norm_name"],
         "std_status": row["std_status"],
@@ -133,6 +133,150 @@ def _major_item(row: dict) -> dict:
         "min_rank": int(row["min_rank"]) if row["min_rank"] is not None else None,
         "admit_count": row["admit_count"],
     }
+    if "expr_id" in row:
+        item.update(
+            {
+                "expr_id": row["expr_id"],
+                "representative_admission_id": row["admission_id"],
+                "unit_id": row["unit_id"],
+                "unit_name": row["unit_name"],
+                "group_id": row["group_id"],
+                "professional_rank_gap": (
+                    int(row["professional_rank_gap"])
+                    if row["professional_rank_gap"] is not None
+                    else None
+                ),
+            }
+        )
+    return item
+
+
+def _facts_without_major_name(cur, school_id: int) -> int:
+    """返回该校来源未提供专业名的事实数；保持旧接口的全校统计口径。"""
+    cur.execute(
+        """
+        select count(*) as n
+        from major_admission ma
+        join school_unit u on u.unit_id = ma.unit_id
+        where u.school_id = %(school_id)s and ma.expr_id is null
+        """,
+        {"school_id": school_id},
+    )
+    return cur.fetchone()["n"]
+
+
+def _list_candidate_profile_college_majors(
+    *,
+    school_id: int,
+    source_province: str,
+    year: int,
+    category: str,
+    batch: str | None,
+    candidate_rank: int,
+    std_major_id: int | None,
+    mapping: str | None,
+    q: str | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict], int, bool, int]:
+    """CandidateProfile V1.2：每个 expr_id 选择一条可追溯的代表事实。
+
+    `min_rank` 非空事实优先，再按 ABS(min_rank - candidate_rank)、min_rank、
+    major_admission.id、unit_id 稳定排序。只有全部候选都缺位次时才选择 NULL
+    事实，因此不会把当前考试上下文中真实存在的专业误判为不存在。
+    """
+    params: dict[str, Any] = {
+        "school_id": school_id,
+        "source_province": source_province,
+        "year": year,
+        "category": category,
+        "batch": batch or None,
+        "candidate_rank": candidate_rank,
+        "std_major_id": std_major_id,
+        "q": q or None,
+    }
+    extra = ""
+    if mapping == "mapped":
+        extra = " and maj.major_id is not null"
+    elif mapping == "unmapped":
+        extra = " and maj.major_id is null"
+
+    ranked_sql = f"""
+        select ma.id as admission_id,
+               ma.expr_id,
+               ma.group_id,
+               ma.unit_id,
+               u.unit_name,
+               ma.source_province,
+               ma.year,
+               ma.category,
+               ma.batch,
+               ma.subject_req,
+               e.raw_major_name,
+               e.norm_name,
+               e.std_status,
+               maj.major_id,
+               maj.std_code,
+               maj.std_name,
+               maj.education_level as std_education_level,
+               ma.min_score,
+               ma.max_score,
+               ma.avg_score,
+               ma.min_rank,
+               ma.admit_count,
+               case when ma.min_rank is null then null
+                    else ma.min_rank - %(candidate_rank)s end as professional_rank_gap,
+               row_number() over (
+                   partition by ma.expr_id
+                   order by case when ma.min_rank is null then 1 else 0 end,
+                            abs(ma.min_rank - %(candidate_rank)s) nulls last,
+                            ma.min_rank nulls last,
+                            ma.id,
+                            ma.unit_id
+               ) as representative_order
+        {_MJ_FROM}
+        where u.school_id = %(school_id)s
+          and ma.source_province = %(source_province)s
+          and ma.year = %(year)s
+          and ma.category = %(category)s
+          and (%(batch)s is null or ma.batch = %(batch)s)
+          and (%(std_major_id)s is null or m.major_id = %(std_major_id)s)
+          and (%(q)s is null
+               or e.raw_major_name ilike '%%' || %(q)s || '%%'
+               or maj.std_name ilike '%%' || %(q)s || '%%')
+          {extra}
+    """
+
+    with get_cursor() as cur:
+        cur.execute(
+            f"select count(*) as n from ({ranked_sql}) ranked "
+            "where representative_order = 1",
+            params,
+        )
+        total = cur.fetchone()["n"]
+        facts_without_major_name = _facts_without_major_name(cur, school_id)
+        cur.execute(
+            f"""
+            select *
+            from ({ranked_sql}) ranked
+            where representative_order = 1
+            order by case when min_rank is null then 1 else 0 end,
+                     abs(professional_rank_gap) nulls last,
+                     min_rank nulls last,
+                     raw_major_name,
+                     expr_id
+            limit %(limit)s offset %(offset)s
+            """,
+            {**params, "limit": page_size, "offset": offset_of(page, page_size)},
+        )
+        rows = cur.fetchall()
+
+    return (
+        [_major_item(row) for row in rows],
+        total,
+        False,
+        facts_without_major_name,
+    )
 
 
 def list_college_majors(
@@ -141,6 +285,7 @@ def list_college_majors(
     year: int | None = None,
     category: str | None = None,
     batch: str | None = None,
+    candidate_rank: int | None = None,
     std_major_id: int | None = None,
     mapping: str | None = None,
     q: str | None = None,
@@ -162,6 +307,25 @@ def list_college_majors(
     """
     page = max(page, 1)
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+
+    if candidate_rank is not None:
+        if not source_province or year is None or not category:
+            raise ValueError(
+                "candidate_rank 模式必须同时提供 source_province、year、category"
+            )
+        return _list_candidate_profile_college_majors(
+            school_id=school_id,
+            source_province=source_province,
+            year=year,
+            category=category,
+            batch=batch,
+            candidate_rank=candidate_rank,
+            std_major_id=std_major_id,
+            mapping=mapping,
+            q=q,
+            page=page,
+            page_size=page_size,
+        )
 
     params: dict[str, Any] = {
         "school_id": school_id,
@@ -196,16 +360,7 @@ def list_college_majors(
         # 被排除的无专业名记录：只按学校算，**不受其它筛选条件影响**。
         # 它回答的是「这所学校的专业数据整体缺了多少」，跟着筛选条件变会让
         # 同一个数字在不同筛选下忽大忽小，前端没法解释。
-        cur.execute(
-            """
-            select count(*) as n
-            from major_admission ma
-            join school_unit u on u.unit_id = ma.unit_id
-            where u.school_id = %(school_id)s and ma.expr_id is null
-            """,
-            {"school_id": school_id},
-        )
-        facts_without_major_name = cur.fetchone()["n"]
+        facts_without_major_name = _facts_without_major_name(cur, school_id)
 
         cur.execute(
             f"""

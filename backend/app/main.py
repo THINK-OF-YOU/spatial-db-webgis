@@ -58,7 +58,7 @@ app.add_middleware(
 # 谁的文件谁实现，不要来这里加路由。
 # API 10（周边交通）挂在 colleges.router 上，所以这里没有新增一行。
 # API 11/12/13（专业）是 2026-09-17 数据库恢复专业语义链之后新增的，
-# 单独一个 majors.router —— 原计划 10 个接口，现在是 13 个。
+# 单独一个 majors.router —— 原计划 10 个接口，现在是 14 个。
 API_PREFIX = "/api"
 
 app.include_router(colleges.router, prefix=API_PREFIX)   # 莫炜钧  1, 2, 10

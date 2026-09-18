@@ -26,9 +26,15 @@ const LEVEL_TEXT: Record<RegionLevel, string> = {
 const mapRef = inject(MAP_KEY)!
 const store = useSearchStore()
 const { selectedRegions } = storeToRefs(store)
+const panelProps = defineProps<{ open: boolean }>()
+const emit = defineEmits<{
+  open: []
+  close: []
+}>()
 
 const breadcrumb = ref<RegionTrailItem[]>([ROOT])
 const focusedRegion = shallowRef<RegionFeature | null>(null)
+const currentFeatures = shallowRef<RegionFeature[]>([])
 const loading = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -97,6 +103,14 @@ function focusRegion(feature: RegionFeature) {
   focusedRegion.value = feature
   notice.value = ''
   updateStyles()
+
+  const map = mapRef.value
+  const layer = layerByAdcode.get(feature.properties.adcode)
+  if (!map || !layer) return
+  const bounds = layer.getBounds()
+  if (!bounds.isValid()) return
+  const maxZoom = feature.properties.level === 'province' ? 6 : feature.properties.level === 'city' ? 10 : 13
+  map.fitBounds(bounds, { padding: [24, 24], maxZoom })
 }
 
 function fitCurrentFeatures(map: L.Map, level: RegionLevel) {
@@ -112,6 +126,7 @@ function renderFeatures(map: L.Map, collection: RegionCollection) {
   layerGroup = markRaw(L.featureGroup()).addTo(map)
   layerByAdcode.clear()
   focusedRegion.value = null
+  currentFeatures.value = collection.features
 
   for (const feature of collection.features) {
     const props = feature.properties
@@ -129,7 +144,10 @@ function renderFeatures(map: L.Map, collection: RegionCollection) {
       polygon.setStyle({ weight: 2, fillOpacity: 0.12 })
     })
     polygon.on('mouseout', updateStyles)
-    polygon.on('click', () => focusRegion(feature))
+    polygon.on('click', () => {
+      focusRegion(feature)
+      emit('open')
+    })
     polygon.addTo(layerGroup)
     layerByAdcode.set(props.adcode, polygon)
   }
@@ -137,6 +155,14 @@ function renderFeatures(map: L.Map, collection: RegionCollection) {
   currentFeatureCount.value = collection.features.length
   currentLevel.value = collection.features[0]?.properties.level ?? currentLevel.value
   fitCurrentFeatures(map, currentLevel.value)
+}
+
+function isFocused(feature: RegionFeature) {
+  return focusedRegion.value?.properties.adcode === feature.properties.adcode
+}
+
+function isSelected(feature: RegionFeature) {
+  return selectedRegions.value.includes(feature.properties.adcode)
 }
 
 function queryKey(query: RegionQuery) {
@@ -277,7 +303,7 @@ watch(selectedRegions, updateStyles)
 </script>
 
 <template>
-  <section class="region-browser" aria-label="行政区浏览与筛选">
+  <section v-if="panelProps.open" class="region-browser" aria-label="行政区浏览与筛选">
     <div class="region-browser-top">
       <nav class="region-breadcrumb" aria-label="行政区层级">
         <template v-for="(item, index) in breadcrumb" :key="item.adcode ?? 'root'">
@@ -300,6 +326,9 @@ watch(selectedRegions, updateStyles)
       >
         返回上一级
       </button>
+      <button type="button" class="region-close" aria-label="关闭行政区选择器" @click="emit('close')">
+        ×
+      </button>
     </div>
 
     <p v-if="loading" class="region-state">正在加载行政区…</p>
@@ -309,6 +338,22 @@ watch(selectedRegions, updateStyles)
     </div>
     <p v-else-if="!currentFeatureCount" class="region-state">当前层级暂无行政区数据。</p>
     <p v-else class="region-level">{{ LEVEL_TEXT[currentLevel] }} · {{ currentFeatureCount }} 个</p>
+
+    <div v-if="!loading && !error && currentFeatures.length" class="region-list" role="list" aria-label="当前层行政区">
+      <button
+        v-for="feature in currentFeatures"
+        :key="feature.properties.adcode"
+        type="button"
+        class="region-list-item"
+        :class="{ focused: isFocused(feature), selected: isSelected(feature) }"
+        :aria-current="isFocused(feature) ? 'true' : undefined"
+        :title="`聚焦 ${feature.properties.name}`"
+        @click.stop="focusRegion(feature)"
+      >
+        <span>{{ feature.properties.name }}</span>
+        <small v-if="isSelected(feature)">已筛选</small>
+      </button>
+    </div>
 
     <div v-if="focusedRegion" class="region-focus">
       <div>
@@ -350,11 +395,13 @@ watch(selectedRegions, updateStyles)
 <style scoped>
 .region-browser {
   position: absolute;
-  top: 12px;
-  left: 54px;
-  z-index: 1000;
-  width: min(330px, calc(100% - 430px));
-  min-width: 250px;
+  top: 58px;
+  right: 12px;
+  z-index: 1030;
+  width: min(460px, calc(100% - 24px));
+  min-width: 300px;
+  max-height: min(72vh, 620px);
+  overflow: auto;
   padding: 9px 10px;
   border: 1px solid #dce2e8;
   border-radius: 8px;
@@ -373,6 +420,21 @@ watch(selectedRegions, updateStyles)
 }
 .region-browser-top {
   justify-content: space-between;
+}
+.region-close {
+  flex: none;
+  width: 25px;
+  height: 25px;
+  border: 1px solid #dce7df;
+  border-radius: 6px;
+  background: #f7fbf8;
+  color: #527065;
+  font-size: 18px;
+  line-height: 1;
+}
+.region-close:hover {
+  border-color: #9fc4ae;
+  background: #edf7f0;
 }
 .region-breadcrumb {
   min-width: 0;
@@ -413,6 +475,67 @@ watch(selectedRegions, updateStyles)
   margin: 7px 0 0;
   color: #738078;
   line-height: 1.5;
+}
+.region-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 5px;
+  max-height: 170px;
+  margin-top: 8px;
+  padding: 7px 2px 2px 0;
+  overflow-y: auto;
+  border-top: 1px solid #e5ebe7;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd8cf transparent;
+}
+.region-list-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  border: 1px solid #e3e9e5;
+  border-radius: 5px;
+  background: #fbfdfb;
+  color: #50685b;
+  padding: 5px 6px;
+  text-align: left;
+  font: inherit;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.region-list-item:hover {
+  border-color: #9ab9a7;
+  background: #f2f8f3;
+}
+.region-list-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.region-list-item small {
+  flex: none;
+  color: #1d4ed8;
+  font-size: 9px;
+}
+.region-list-item.focused {
+  border-color: #4e8f76;
+  background: #eef8f0;
+  box-shadow: inset 3px 0 #15803d;
+  color: #1f5e46;
+  font-weight: 650;
+}
+.region-list-item.selected {
+  border-color: #b7c9eb;
+  background: #eef4ff;
+  color: #2452a2;
+}
+.region-list-item.focused.selected {
+  border-color: #6e9d88;
+  background: #eef8f0;
+  box-shadow: inset 3px 0 #1d4ed8;
+  color: #1d4ed8;
 }
 .region-focus {
   display: flex;

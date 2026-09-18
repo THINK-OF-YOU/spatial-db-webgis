@@ -1,18 +1,17 @@
-import type { Feature, MultiPolygon, Point, Polygon } from 'geojson'
+import type { Feature, MultiPolygon, Polygon } from 'geojson'
+import type {
+  ViewportCampusFeature,
+  ViewportCampusProps,
+  ViewportCampusStatus,
+} from '../../types/search'
 
 /** 校区核验状态，契约冻结：CONFIRMED=已核验，CANDIDATE=候选。 */
-export type CampusStatus = 'CONFIRMED' | 'CANDIDATE'
+export type CampusStatus = ViewportCampusStatus
 
 /** /api/map/campuses 的 feature properties（契约 §4.6）。 */
-export interface CampusProps {
-  campus_id: number
-  school_id: number
-  school_name: string
-  campus_name: string
-  verify_status: CampusStatus
-}
+export type CampusProps = ViewportCampusProps
 
-export type CampusFeature = Feature<Point, CampusProps>
+export type CampusFeature = ViewportCampusFeature
 
 /** /api/map/regions 的 feature properties（契约 §4.7）。 */
 export type RegionLevel = 'province' | 'city' | 'district'

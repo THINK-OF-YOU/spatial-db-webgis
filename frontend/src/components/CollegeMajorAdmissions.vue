@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { getCollegeMajors, getStandardMajors } from "../api/majors";
 import { getFilterMeta } from "../api/meta";
+import { useSearchStore } from "../stores/useSearchStore";
 import type { FilterMeta } from "../types/meta";
 import type {
   MajorAdmissionItem,
@@ -14,6 +16,36 @@ const props = defineProps<{
   schoolId: number;
   majorMappingAvailable: boolean;
 }>();
+
+const store = useSearchStore();
+const {
+  candidateProfile,
+  candidateProfileEnabled,
+  candidateEffectiveRank,
+  hasSearched,
+} = storeToRefs(store);
+const candidateProfileActive = computed(
+  () =>
+    hasSearched.value &&
+    candidateProfileEnabled.value &&
+    Boolean(candidateProfile.value.source_province) &&
+    candidateProfile.value.year !== null &&
+    Boolean(candidateProfile.value.category) &&
+    candidateEffectiveRank.value !== null &&
+    Number.isInteger(candidateEffectiveRank.value) &&
+    (candidateEffectiveRank.value ?? 0) > 0,
+);
+const candidateProfileSignature = computed(() =>
+  candidateProfileActive.value
+    ? [
+        candidateProfile.value.source_province,
+        candidateProfile.value.year,
+        candidateProfile.value.category,
+        candidateProfile.value.batch,
+        candidateEffectiveRank.value,
+      ].join("|")
+    : "legacy",
+);
 
 type FilterDraft = {
   q: string;
@@ -61,10 +93,9 @@ const activeFilterCount = computed(
   () =>
     [
       draft.q,
-      draft.source_province,
-      draft.year,
-      draft.category,
-      draft.batch,
+      ...(candidateProfileActive.value
+        ? []
+        : [draft.source_province, draft.year, draft.category, draft.batch]),
       draft.mapping,
       selectedStandardMajor.value,
     ].filter(Boolean).length,
@@ -86,14 +117,28 @@ async function load(nextPage = 1) {
   warnings.value = [];
 
   try {
+    const profile = candidateProfile.value;
     const data = await getCollegeMajors(
       props.schoolId,
       {
         q: draft.q.trim() || undefined,
-        source_province: draft.source_province || undefined,
-        year: draft.year === "" ? undefined : draft.year,
-        category: draft.category || undefined,
-        batch: draft.batch || undefined,
+        source_province: candidateProfileActive.value
+          ? profile.source_province
+          : draft.source_province || undefined,
+        year: candidateProfileActive.value
+          ? profile.year ?? undefined
+          : draft.year === ""
+            ? undefined
+            : draft.year,
+        category: candidateProfileActive.value
+          ? profile.category
+          : draft.category || undefined,
+        batch: candidateProfileActive.value
+          ? profile.batch || undefined
+          : draft.batch || undefined,
+        candidate_rank: candidateProfileActive.value
+          ? candidateEffectiveRank.value ?? undefined
+          : undefined,
         mapping: draft.mapping || undefined,
         std_major_id: selectedStandardMajor.value?.major_id,
         page: nextPage,
@@ -208,6 +253,14 @@ function displayNumber(value: number | null) {
   return value === null ? "未提供" : value.toLocaleString("zh-CN");
 }
 
+function describeProfessionalRankGap(gap: number | null | undefined) {
+  if (gap == null) return "当前考试上下文暂无历史最低位次";
+  if (gap === 0) return "专业历史最低位次与你当前位次相同";
+  return gap > 0
+    ? `专业历史最低位次比你当前位次靠后 ${gap.toLocaleString("zh-CN")} 位`
+    : `专业历史最低位次比你当前位次靠前 ${Math.abs(gap).toLocaleString("zh-CN")} 位`;
+}
+
 watch(
   () => draft.mapping,
   (mapping) => {
@@ -229,6 +282,11 @@ watch(
   { immediate: true },
 );
 
+watch(candidateProfileSignature, (signature, previous) => {
+  if (signature === previous) return;
+  void load(1);
+});
+
 onBeforeUnmount(() => {
   dataController?.abort();
   metaController?.abort();
@@ -242,7 +300,13 @@ onBeforeUnmount(() => {
       <div>
         <span class="eyebrow">ADMISSION MAJORS</span>
         <h3 id="major-admissions-title">专业录取</h3>
-        <p>来源招生专业表达与标准专业分层展示。</p>
+        <p>
+          {{
+            candidateProfileActive
+              ? "按当前考生画像查看校内专业历史位次，仅作历史事实参考。"
+              : "来源招生专业表达与标准专业分层展示。"
+          }}
+        </p>
       </div>
       <span v-if="!loading && !error" class="major-total">
         {{ total.toLocaleString() }} 条
@@ -252,6 +316,23 @@ onBeforeUnmount(() => {
     <p v-if="!majorMappingAvailable" class="major-availability-note">
       该校有专业录取数据，但暂无已建立的标准专业映射；来源专业与录取事实仍可正常查询。
     </p>
+
+    <div v-if="candidateProfileActive" class="major-profile-context">
+      <span>当前考生画像</span>
+      <strong>
+        {{ candidateProfile.source_province }} · {{ candidateProfile.year }} 年 ·
+        {{ candidateProfile.category }} ·
+        {{ candidateProfile.batch || "全部批次" }} ·
+        <template v-if="candidateProfile.input_mode === 'score'">
+          {{ candidateProfile.score }} 分 → 参考位次
+        </template>
+        <template v-else>位次</template>
+        {{ candidateEffectiveRank?.toLocaleString("zh-CN") }}
+      </strong>
+      <small>
+        每个来源专业表达选取与当前位次最接近的真实历史事实；学校级位次窗口不会删除专业。
+      </small>
+    </div>
 
     <form class="major-filter-form" @submit.prevent="applyFilters">
       <div class="major-filter-primary">
@@ -265,7 +346,7 @@ onBeforeUnmount(() => {
             autocomplete="off"
           />
         </div>
-        <div>
+        <div v-if="!candidateProfileActive">
           <label for="major-province">生源省</label>
           <select
             v-if="filterMeta"
@@ -289,7 +370,7 @@ onBeforeUnmount(() => {
             placeholder="如：湖南"
           />
         </div>
-        <div>
+        <div v-if="!candidateProfileActive">
           <label for="major-year">年份</label>
           <select v-if="filterMeta" id="major-year" v-model="draft.year">
             <option value="">全部年份</option>
@@ -322,13 +403,19 @@ onBeforeUnmount(() => {
       >
         <span>更多筛选</span>
         <span>
-          {{ activeFilterCount ? `已选 ${activeFilterCount} 项` : "科类、批次、映射" }}
+          {{
+            activeFilterCount
+              ? `已选 ${activeFilterCount} 项`
+              : candidateProfileActive
+                ? "映射状态与标准专业"
+                : "科类、批次、映射"
+          }}
           {{ moreFiltersOpen ? "收起" : "展开" }}
         </span>
       </button>
 
       <div v-if="moreFiltersOpen" class="major-filter-more">
-        <div>
+        <div v-if="!candidateProfileActive">
           <label for="major-category">科类 / 选科</label>
           <select
             v-if="filterMeta"
@@ -352,7 +439,7 @@ onBeforeUnmount(() => {
             placeholder="来源原始口径"
           />
         </div>
-        <div>
+        <div v-if="!candidateProfileActive">
           <label for="major-batch">录取批次</label>
           <select v-if="filterMeta" id="major-batch" v-model="draft.batch">
             <option value="">全部批次</option>
@@ -476,7 +563,7 @@ onBeforeUnmount(() => {
     <div v-else class="major-record-list">
       <article
         v-for="(item, index) in items"
-        :key="`${page}-${index}-${item.raw_major_name}`"
+        :key="item.expr_id ?? `${page}-${index}-${item.raw_major_name}`"
         class="major-record"
       >
         <div class="major-record-title">
@@ -505,6 +592,10 @@ onBeforeUnmount(() => {
           <span v-if="!factContext(item).length">招生条件未提供</span>
         </div>
 
+        <p v-if="candidateProfileActive" class="major-rank-gap">
+          {{ describeProfessionalRankGap(item.professional_rank_gap) }}
+        </p>
+
         <dl class="major-scores">
           <div>
             <dt>最低分</dt>
@@ -519,7 +610,7 @@ onBeforeUnmount(() => {
             <dd>{{ displayNumber(item.max_score) }}</dd>
           </div>
           <div>
-            <dt>最低位次</dt>
+            <dt>{{ candidateProfileActive ? "专业历史最低位次" : "最低位次" }}</dt>
             <dd>{{ displayNumber(item.min_rank) }}</dd>
           </div>
           <div>
@@ -530,6 +621,17 @@ onBeforeUnmount(() => {
 
         <p class="major-subject">
           <span>选科要求</span>{{ item.subject_req || "未提供" }}
+        </p>
+        <p
+          v-if="candidateProfileActive && item.representative_admission_id"
+          class="major-representative-trace"
+        >
+          代表事实 #{{ item.representative_admission_id }} ·
+          {{ item.unit_name || `招生单位 ${item.unit_id}` }} ·
+          来源表达 #{{ item.expr_id }}
+          <template v-if="item.group_id !== null && item.group_id !== undefined">
+            · 专业组 #{{ item.group_id }}
+          </template>
         </p>
       </article>
     </div>

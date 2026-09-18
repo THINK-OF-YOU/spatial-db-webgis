@@ -69,6 +69,7 @@ GET /api/colleges/{school_id}/majors
 | `year` | `int` | 不限 | 2000–2100 |
 | `category` | `string` | 不限 | 科类/选科，**来源原始口径**（如 `综合`、`物理类`） |
 | `batch` | `string` | 不限 | 批次，**来源原始口径**（如 `本科批`、`本科批B段`） |
+| `candidate_rank` | `int` | 不启用 | CandidateProfile V1.2 考生位次（≥1）。启用时必须同时提供 `source_province`、`year`、`category` |
 | `std_major_id` | `int` | 不限 | 按标准专业筛。⚠️ **只覆盖 37.80%**，见 §5 |
 | `mapping` | `string` | 不限 | `all` / `mapped` / `unmapped`，其他值 → **422** |
 | `q` | `string` | 不限 | 模糊匹配来源专业名**或**标准专业名 |
@@ -99,7 +100,9 @@ GET /api/colleges/{school_id}/majors
   "page_size": 2,
   "warnings": [],
   "display_deduplicated": true,
-  "facts_without_major_name": 46
+  "facts_without_major_name": 46,
+  "candidate_profile_applied": false,
+  "candidate_profile": null
 }
 ```
 
@@ -108,11 +111,13 @@ GET /api/colleges/{school_id}/majors
 | `total` | `int` | 精确展示合并**之后**的条数（前端分页用它） |
 | `display_deduplicated` | `bool` | 是否对**全部展示字段完全一致**的记录做了精确合并。**这只是在做去重，不是数据库改数据**，可以直接忽略 |
 | `facts_without_major_name` | `int` | 该校另有几条录取记录**来源根本没给专业名**（全库 22,325 条）。这些行不会出现在 `items` 里——一行没有专业名的记录渲染出来就是一行空白。建议在列表底部提示一句：`另有 46 条录取记录来源未提供专业名` |
+| `candidate_profile_applied` | `bool` | 是否启用了 V1.2 校内专业历史位次联动 |
+| `candidate_profile` | `object \| null` | 实际应用的生源省、年份、科类、批次与考生位次；旧模式为 `null` |
 
 `facts_without_major_name` **只按学校统计，不随其他筛选条件变化**。这样同一个
 数字不会在不同筛选下忽大忽小。
 
-### `items[]` 元素字段（恰好 14 个）
+### `items[]` 元素字段（旧模式恰好 14 个）
 
 | 字段 | 类型 | 可空 | 说明 |
 |---|---|---|---|
@@ -133,6 +138,27 @@ GET /api/colleges/{school_id}/majors
 
 > **缺失一律是 `null`，不是 `0`。** 前端判断用 `x === null`，
 > **不要**用 `!x`——`admit_count` 为 `0` 和不适用是两回事。
+
+### CandidateProfile V1.2 增强模式
+
+提供 `candidate_rank` 后，接口限定同一 `source_province + year + category +
+optional batch`，按 `expr_id` 返回一个可追溯的代表事实。代表事实优先选择
+`min_rank` 非空且 `ABS(min_rank - candidate_rank)` 最小的一条；同差值依次按
+`min_rank`、`major_admission.id`、`unit_id` 稳定决胜。学校级 `rank_ahead /
+rank_behind` 不传入本接口，也不会删除校内专业。
+
+增强模式的每个 `items[]` 在上述 14 个字段外新增：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `expr_id` | `int` | 来源招生专业表达身份，专业列表主身份 |
+| `representative_admission_id` | `int` | 本次选中的真实 `major_admission.id` |
+| `unit_id` / `unit_name` | `int` / `string` | 代表事实所属招生单位 |
+| `group_id` | `int \| null` | 当前库尚未恢复专业组，通常为 `null` |
+| `professional_rank_gap` | `int \| null` | `专业历史 min_rank - candidate_rank`；缺位次时为 `null` |
+
+有位次的表达按 `ABS(professional_rank_gap)` 升序；只有 NULL 位次事实的表达
+仍保留在列表尾部。标准专业映射仅作补充显示，不是表达进入结果的前提。
 
 `std_major` 对象（**只有非 null 时才有**）：
 

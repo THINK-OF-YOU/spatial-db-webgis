@@ -1,13 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { getCollegeAdmissions } from "../api/admissions";
+import { storeToRefs } from "pinia";
+import {
+  getCollegeAdmissions,
+  getCollegeAdmissionSummary,
+} from "../api/admissions";
 import { getFilterMeta } from "../api/meta";
-import type { SchoolAdmissionItem } from "../types/admission";
+import { useSearchStore } from "../stores/useSearchStore";
+import type {
+  CollegeAdmissionSummary,
+  SchoolAdmissionItem,
+} from "../types/admission";
 import type { FilterMeta } from "../types/meta";
 
 const props = defineProps<{
   schoolId: number;
 }>();
+
+const store = useSearchStore();
+const { candidateProfile, candidateProfileEnabled, candidateEffectiveRank } =
+  storeToRefs(store);
 
 type FilterDraft = {
   source_province: string;
@@ -37,6 +49,37 @@ const filterMeta = ref<FilterMeta | null>(null);
 const metaWarnings = ref<string[]>([]);
 const metaLoading = ref(false);
 const metaError = ref("");
+const summary = ref<CollegeAdmissionSummary | null>(null);
+const summaryLoading = ref(false);
+const summaryError = ref("");
+const showFullRecords = ref(false);
+
+const candidateProfileActive = computed(() => {
+  const rank = candidateEffectiveRank.value;
+  return (
+    candidateProfileEnabled.value &&
+    Boolean(candidateProfile.value.source_province) &&
+    candidateProfile.value.year !== null &&
+    Boolean(candidateProfile.value.category) &&
+    rank !== null &&
+    Number.isInteger(rank) &&
+    rank > 0
+  );
+});
+const candidateProfileSignature = computed(() =>
+  candidateProfileActive.value
+    ? JSON.stringify([
+        props.schoolId,
+        candidateProfile.value.source_province,
+        candidateProfile.value.year,
+        candidateProfile.value.category,
+        candidateProfile.value.batch,
+        candidateProfile.value.input_mode,
+        candidateProfile.value.score,
+        candidateEffectiveRank.value,
+      ])
+    : "",
+);
 
 const pages = computed(() =>
   Math.max(1, Math.ceil(total.value / page_size.value)),
@@ -58,7 +101,47 @@ const visibleWarnings = computed(() =>
 
 let dataController: AbortController | undefined;
 let metaController: AbortController | undefined;
+let summaryController: AbortController | undefined;
 let requestedPage = 1;
+
+async function loadSummary() {
+  summaryController?.abort();
+  summary.value = null;
+  summaryError.value = "";
+  if (!candidateProfileActive.value) {
+    summaryLoading.value = false;
+    return;
+  }
+
+  const rank = candidateEffectiveRank.value;
+  const mainYear = candidateProfile.value.year;
+  if (rank === null || mainYear === null) return;
+
+  const current = new AbortController();
+  summaryController = current;
+  summaryLoading.value = true;
+  try {
+    const data = await getCollegeAdmissionSummary(
+      props.schoolId,
+      {
+        source_province: candidateProfile.value.source_province,
+        main_year: mainYear,
+        category: candidateProfile.value.category,
+        candidate_rank: rank,
+        batch: candidateProfile.value.batch || undefined,
+      },
+      current.signal,
+    );
+    if (!current.signal.aborted) summary.value = data;
+  } catch (cause) {
+    if (!current.signal.aborted) {
+      summaryError.value =
+        cause instanceof Error ? cause.message : "多年度历史参考加载失败。";
+    }
+  } finally {
+    if (summaryController === current) summaryLoading.value = false;
+  }
+}
 
 async function load(nextPage = 1) {
   requestedPage = nextPage;
@@ -140,6 +223,13 @@ function displayAdmitCount(value: number | null) {
   return value.toLocaleString("zh-CN");
 }
 
+function displayRankGap(rankGap: number) {
+  if (rankGap === 0) return "与当前参考位次相同";
+  return rankGap > 0
+    ? `历史最低位次比当前靠后 ${rankGap.toLocaleString("zh-CN")} 位`
+    : `历史最低位次比当前靠前 ${Math.abs(rankGap).toLocaleString("zh-CN")} 位`;
+}
+
 function recordKey(item: SchoolAdmissionItem, index: number) {
   return [
     page.value,
@@ -163,9 +253,22 @@ watch(
   { immediate: true },
 );
 
+watch(
+  candidateProfileSignature,
+  (signature, previous) => {
+    summaryController?.abort();
+    summary.value = null;
+    summaryError.value = "";
+    showFullRecords.value = false;
+    if (signature && signature !== previous) void loadSummary();
+  },
+  { immediate: true },
+);
+
 onBeforeUnmount(() => {
   dataController?.abort();
   metaController?.abort();
+  summaryController?.abort();
 });
 </script>
 
@@ -177,12 +280,112 @@ onBeforeUnmount(() => {
         <h3 id="college-admissions-title">历史投档</h3>
         <p>按来源条件查看该校历年投档分数与位次。</p>
       </div>
-      <span v-if="!loading && !error" class="major-total">
+      <span v-if="!candidateProfileActive && !loading && !error" class="major-total">
         {{ total.toLocaleString() }} 条
       </span>
     </div>
 
-    <form class="major-filter-form" @submit.prevent="applyFilters">
+    <section
+      v-if="candidateProfileActive"
+      class="admission-summary"
+      aria-labelledby="admission-summary-title"
+    >
+      <div class="admission-summary-context">
+        <div>
+          <span class="eyebrow">CANDIDATE PROFILE · MULTI-YEAR</span>
+          <h4 id="admission-summary-title">学校级多年度历史参考</h4>
+        </div>
+        <strong>
+          参考位次 {{ candidateEffectiveRank?.toLocaleString("zh-CN") }}
+        </strong>
+      </div>
+      <p class="admission-summary-profile">
+        {{ candidateProfile.source_province }} · 主参考年份
+        {{ candidateProfile.year }} · {{ candidateProfile.category }} ·
+        {{ candidateProfile.batch || "全部批次" }}
+        <template v-if="candidateProfile.input_mode === 'score'">
+          · {{ candidateProfile.score }} 分解析所得
+        </template>
+      </p>
+      <p class="admission-summary-note">
+        各年份均与同一个当前参考位次比较；科类与批次严格使用来源原始口径，不做跨年映射。
+      </p>
+
+      <div v-if="summaryLoading" class="state-message major-state" role="status">
+        <span class="loading-ring" />正在整理多年度历史参考…
+      </div>
+      <div v-else-if="summaryError" class="state-message major-state error" role="alert">
+        <h3>多年度历史参考暂不可用</h3>
+        <p>{{ summaryError }}</p>
+        <button class="secondary" @click="loadSummary">重新加载</button>
+      </div>
+      <div
+        v-else-if="summary && !summary.years.length"
+        class="state-message major-state"
+        role="status"
+      >
+        <h3>暂无可比较年份</h3>
+        <p>当前生源省与科类在主参考年份之前没有可用历史年份。</p>
+      </div>
+      <div v-else-if="summary" class="admission-summary-years">
+        <article
+          v-for="entry in summary.years"
+          :key="entry.year"
+          class="admission-summary-year"
+          :class="entry.status"
+        >
+          <div class="admission-summary-year-head">
+            <div>
+              <strong>{{ entry.year }} 年</strong>
+              <span>{{ entry.record_count.toLocaleString("zh-CN") }} 条真实记录</span>
+            </div>
+            <span class="admission-summary-status">
+              {{
+                entry.status === "reference_available"
+                  ? "可比较"
+                  : entry.status === "rank_unavailable"
+                    ? "位次缺失"
+                    : "无匹配记录"
+              }}
+            </span>
+          </div>
+
+          <template v-if="entry.reference_admission">
+            <dl class="admission-summary-metrics">
+              <div>
+                <dt>历史最低位次</dt>
+                <dd>
+                  {{ entry.reference_admission.min_rank.toLocaleString("zh-CN") }}
+                </dd>
+              </div>
+              <div>
+                <dt>历史最低分</dt>
+                <dd>{{ displayNumber(entry.reference_admission.min_score) }}</dd>
+              </div>
+            </dl>
+            <p class="admission-summary-gap">
+              {{ displayRankGap(entry.reference_admission.rank_gap) }}
+            </p>
+            <p class="admission-summary-source">
+              {{ entry.reference_admission.unit_name }} ·
+              {{ entry.reference_admission.batch || "批次未提供" }}
+            </p>
+          </template>
+          <p v-else-if="entry.status === 'rank_unavailable'" class="admission-summary-empty">
+            有历史投档记录，但当前缺少可用于位次比较的历史最低位次。
+          </p>
+          <p v-else class="admission-summary-empty">
+            当前考试口径下无匹配投档记录。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <form
+      v-if="!candidateProfileActive"
+      class="major-filter-form"
+      @submit.prevent="applyFilters"
+    >
       <div class="admission-filter-primary">
         <div>
           <label for="admission-province">生源省</label>
@@ -303,6 +506,21 @@ onBeforeUnmount(() => {
       </div>
     </form>
 
+    <button
+      v-if="candidateProfileActive"
+      type="button"
+      class="admission-full-toggle"
+      :aria-expanded="showFullRecords"
+      @click="showFullRecords = !showFullRecords"
+    >
+      <span>完整历史投档明细</span>
+      <span>{{ showFullRecords ? "收起" : "展开查看" }}</span>
+    </button>
+
+    <div
+      v-if="!candidateProfileActive || showFullRecords"
+      class="admission-full-records"
+    >
     <div class="major-result-toolbar">
       <span>{{ !loading && !error ? `第 ${page} / ${pages} 页` : "查询结果" }}</span>
       <label>
@@ -398,6 +616,7 @@ onBeforeUnmount(() => {
       <p>科类与批次沿用来源数据原始口径，不代表全国统一分类。</p>
       <p>录取人数按来源原值展示；0 不解释为“未公布”或“录取 0 人”。</p>
       <p v-if="displayDeduplicated">已合并展示字段完全一致的重复记录。</p>
+    </div>
     </div>
   </section>
 </template>

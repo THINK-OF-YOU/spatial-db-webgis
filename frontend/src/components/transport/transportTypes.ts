@@ -1,12 +1,14 @@
 /**
  * /api/colleges/{school_id}/transport 的契约类型。
  *
- * 契约见《任务执行书》§4.11，字段逐字一致、全部 snake_case，不做二次映射。
- * 后端 Owner：莫炜钧（API 10）。本文件是前端侧的类型镜像，配合 Mock 先行。
+ * 字段逐字镜像真实 API，全部保持 snake_case，不做二次映射。
  */
 
 /** 交通设施 mode：来源口径，取值限于库内真实值。 */
 export type TransportMode = 'rail' | 'metro' | 'airport' | 'rail_halt'
+
+/** 当前桌面端提供的查询半径。API 本身仍支持 (0, 20] km。 */
+export type TransportRadius = 1 | 3 | 5
 
 /** 单个交通站点（§4.11 字段）。 */
 export interface TransportItem {
@@ -34,6 +36,14 @@ export interface TransportResponse {
   warnings: string[]
 }
 
+export type TransportSummaryMode = Exclude<TransportMode, 'rail_halt'>
+
+export interface TransportSummaryResponse {
+  school_id: number
+  items: Record<TransportSummaryMode, TransportItem | null>
+  warnings: string[]
+}
+
 /** 前端调用 loadTransport 时的可选参数，映射 §4.11 的可选 query。 */
 export interface TransportQuery {
   /** 默认 3，上限 20。 */
@@ -46,11 +56,13 @@ export interface TransportQuery {
 
 /** mode 展示文案。仅前端展示用，非契约字段，后端不返回。 */
 export const MODE_LABELS: Record<TransportMode, string> = {
-  metro: '地铁站',
-  rail: '火车站',
+  metro: '地铁',
+  rail: '铁路站',
   airport: '机场',
   rail_halt: '铁路停靠站',
 }
 
 /** 分组展示顺序（不是排序，只决定面板里分组的先后）。 */
 export const MODE_ORDER: TransportMode[] = ['metro', 'rail', 'airport', 'rail_halt']
+
+export const RADIUS_OPTIONS: TransportRadius[] = [1, 3, 5]

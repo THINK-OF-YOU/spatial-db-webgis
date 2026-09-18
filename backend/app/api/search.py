@@ -10,9 +10,10 @@ app/services/admission_service.py。契约见《任务执行书》§4.10。
 """
 
 import json
+from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.db.pool import get_cursor
 from app.schemas.common import MAX_PAGE_SIZE, offset_of
@@ -33,6 +34,31 @@ class AdmissionCond(BaseModel):
     year: int | None = None
     category: str | None = None
     batch: str | None = None
+    rank: int | None = Field(None, gt=0)
+    rank_ahead: int | None = Field(None, ge=0)
+    rank_behind: int | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_rank_profile(self):
+        if self.rank is None:
+            if self.rank_ahead is not None or self.rank_behind is not None:
+                raise ValueError("rank_ahead / rank_behind 只能与 rank 一起使用")
+            return self
+
+        missing = [
+            label
+            for label, value in (
+                ("source_province", self.source_province),
+                ("year", self.year),
+                ("category", self.category),
+            )
+            if value is None or value == ""
+        ]
+        if missing:
+            raise ValueError(
+                "位次画像模式必须提供 source_province、year、category"
+            )
+        return self
 
 
 class CollegeCond(BaseModel):
@@ -53,6 +79,11 @@ class SpatialCond(BaseModel):
     )
 
 
+class TransportCond(BaseModel):
+    mode: Literal["metro", "rail", "airport"]
+    max_distance_km: float = Field(..., gt=0, le=100)
+
+
 class SearchRequest(BaseModel):
     admission: AdmissionCond | None = None
     college: CollegeCond | None = None
@@ -60,30 +91,29 @@ class SearchRequest(BaseModel):
         default_factory=list, description="目标行政区 adcode 列表（注意：不是生源省）"
     )
     spatial: SpatialCond | None = None
+    transport: list[TransportCond] | None = None
     page: int = Field(1, ge=1)
     page_size: int = Field(20, ge=1, le=MAX_PAGE_SIZE)
 
+    @model_validator(mode="after")
+    def validate_transport_conditions(self):
+        if self.transport is None:
+            return self
+        if len(self.transport) > 3:
+            raise ValueError("transport 最多支持 3 条条件")
+        modes = [condition.mode for condition in self.transport]
+        if len(modes) != len(set(modes)):
+            raise ValueError("transport 中每种交通类型最多选择一次")
+        return self
 
-# ── 基础集合：College + 地域 + 招生 ─────────────────────────────────
-# regions 传的是 adcode；库里 college.reg_province 装的是**市名**，
-# 所以按名字匹配，并把选中行政区的下两级名字一起纳入（省→市→区）。
-# 见协作规范 §5.1。
+
+# ── 基础集合：College + 招生 ───────────────────────────────────────
+# college.reg_province 是“登记地区”属性，不表示 Campus 空间位置。
+# regions 在下面统一通过 AdminRegion Polygon × Campus Point 处理。
 _BASE_CTE = """
     select c.school_id
     from college c
     where (%(edu_level)s is null or c.edu_level = %(edu_level)s)
-      and (
-            %(region_adcodes)s is null
-            or c.reg_province = any(
-                select a.name from admin_region a
-                where a.adcode = any(%(region_adcodes)s)
-                   or a.parent_adcode = any(%(region_adcodes)s)
-                   or a.parent_adcode in (
-                        select a2.adcode from admin_region a2
-                        where a2.parent_adcode = any(%(region_adcodes)s)
-                   )
-            )
-          )
       and (%(admission_ids)s is null or c.school_id = any(%(admission_ids)s))
 """
 
@@ -94,17 +124,40 @@ def search(req: SearchRequest):
 
     # ── 招生条件：交给倪嵩的 service，本接口不写第二套招生 SQL ──────────
     admission_ids: list[int] | None = None
+    rank_references: dict[int, dict] = {}
+    rank_mode = bool(req.admission and req.admission.rank is not None)
     if req.admission:
         # 倪嵩的 service 已实现（2026-09-17）。骨架阶段这里捕获
         # AdmissionFilterNotImplemented 返回 501，是为了不返回"看起来筛过了
         # 其实没筛"的结果；该异常类已随实现一起移除，所以这里不再兜底——
         # 真出错就走 500，不假装成功。
-        admission_ids = admission_service.filter_school_ids(
-            source_province=req.admission.source_province,
-            year=req.admission.year,
-            category=req.admission.category,
-            batch=req.admission.batch,
-        )
+        if rank_mode:
+            references = admission_service.ranked_admission_references(
+                source_province=req.admission.source_province,
+                year=req.admission.year,
+                category=req.admission.category,
+                rank=req.admission.rank,
+                rank_ahead=(
+                    req.admission.rank_ahead
+                    if req.admission.rank_ahead is not None
+                    else 3000
+                ),
+                rank_behind=(
+                    req.admission.rank_behind
+                    if req.admission.rank_behind is not None
+                    else 8000
+                ),
+                batch=req.admission.batch,
+            )
+            rank_references = {row["school_id"]: row for row in references}
+            admission_ids = list(rank_references)
+        else:
+            admission_ids = admission_service.filter_school_ids(
+                source_province=req.admission.source_province,
+                year=req.admission.year,
+                category=req.admission.category,
+                batch=req.admission.batch,
+            )
 
         if req.admission.category or req.admission.batch:
             warnings.append(SOURCE_VOCABULARY)
@@ -116,17 +169,23 @@ def search(req: SearchRequest):
         "edu_level": (req.college.edu_level if req.college else None) or None,
         "region_adcodes": req.regions or None,
         "admission_ids": admission_ids,
+        "rank_mode": rank_mode,
     }
 
-    if spatial:
-        statuses = (
-            list(ALL_VERIFY_STATUSES)
-            if spatial.include_candidate_campus
-            else ["CONFIRMED"]
+    if req.regions:
+        # 多行政区是空间并集：Campus 被任一所选 Polygon 覆盖即可。
+        # ST_Covers 包含恰好落在行政区边界上的点，比 ST_Within 更符合
+        # “位于所选行政区内”的产品语义；EXISTS 避免多区域命中造成重复。
+        predicates.append(
+            "exists ("
+            " select 1 from admin_region ar"
+            " where ar.adcode = any(%(region_adcodes)s)"
+            "   and ar.geom is not null"
+            "   and st_covers(ar.geom, cp.geom)"
+            ")"
         )
-        params["statuses"] = statuses
-        if spatial.include_candidate_campus:
-            warnings.append(INCLUDE_CANDIDATE_CAMPUS)
+
+    if spatial:
 
         if spatial.geometry:
             predicates.append(
@@ -155,7 +214,46 @@ def search(req: SearchRequest):
                 )
                 params["s_radius_m"] = spatial.radius_km * 1000.0
 
+    # Transport 是同一条 Campus 空间链上的可选谓词。每个条件独立生成一个
+    # EXISTS，但全部引用当前 cp，因而行政区 / Polygon / 参考点与所有交通
+    # 条件只能由同一个校区共同满足，不会出现跨校区误命中。
+    transport_enabled = bool(req.transport)
+    for index, condition in enumerate(req.transport or []):
+        mode_param = f"transport_mode_{index}"
+        radius_param = f"transport_radius_m_{index}"
+        predicates.append(
+            "exists ("
+            " select 1 from poi_transport p"
+            f" where p.mode = %({mode_param})s"
+            "   and p.geom is not null"
+            "   and p.geom && st_expand("
+            "       cp.geom,"
+            f"       %({radius_param})s / 111320.0"
+            "       / greatest(cos(radians(abs(st_y(cp.geom)))), 0.01)"
+            "   )"
+            "   and st_dwithin("
+            "       p.geom::geography, cp.geom::geography,"
+            f"       %({radius_param})s"
+            "   )"
+            ")"
+        )
+        params[mode_param] = condition.mode
+        params[radius_param] = condition.max_distance_km * 1000.0
+
     spatial_enabled = bool(predicates)
+
+    if spatial_enabled:
+        # 交通筛选显式启用时必须纳入 CANDIDATE，否则当前仅 4 个 CONFIRMED
+        # 校区会让功能几乎失效。该放宽只作用于本次请求，并通过冻结 warning
+        # 明示；交通关闭时仍完全沿用原 include_candidate_campus 行为。
+        include_candidate = transport_enabled or bool(
+            spatial and spatial.include_candidate_campus
+        )
+        params["statuses"] = (
+            list(ALL_VERIFY_STATUSES) if include_candidate else ["CONFIRMED"]
+        )
+        if include_candidate:
+            warnings.append(INCLUDE_CANDIDATE_CAMPUS)
 
     # ── 拼 CTE ─────────────────────────────────────────────────────
     ctes = f"with base as ({_BASE_CTE})"
@@ -211,7 +309,11 @@ def search(req: SearchRequest):
         left join (select distinct school_id from campus where geom is not null) hc
                on hc.school_id = c.school_id
         {distance_join}
-        order by c.school_id
+        order by
+            case when %(rank_mode)s then
+                array_position(%(admission_ids)s::int[], c.school_id)
+            end nulls last,
+            c.school_id
         limit %(limit)s offset %(offset)s
     """
 
@@ -249,6 +351,11 @@ def search(req: SearchRequest):
     for it in items:
         d = it.pop("distance_m", None)
         it["distance_km"] = round(d / 1000.0, 2) if d is not None else None
+        reference = rank_references.get(it["school_id"])
+        if reference is not None:
+            it["reference_admission"] = {
+                key: value for key, value in reference.items() if key != "school_id"
+            }
 
     return {
         "items": items,

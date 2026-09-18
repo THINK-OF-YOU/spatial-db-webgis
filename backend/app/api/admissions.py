@@ -30,6 +30,30 @@ from app.warnings import SOURCE_VOCABULARY, dedupe
 router = APIRouter(tags=["admission"])
 
 
+@router.get("/colleges/{school_id}/admissions/summary")
+def college_admissions_summary(
+    school_id: int,
+    source_province: str = Query(..., min_length=1, description="生源省，严格使用来源原值"),
+    main_year: int = Query(..., ge=2000, le=2100, description="主参考年份"),
+    category: str = Query(..., min_length=1, description="科类/选科，严格使用来源原值"),
+    candidate_rank: int = Query(..., ge=1, description="当前 CandidateProfile 的有效位次"),
+    batch: str | None = Query(None, min_length=1, description="可选批次，严格精确匹配"),
+):
+    """返回 CandidateProfile 驱动的学校级多年度历史参考。
+
+    该派生摘要不分页、不使用学校级 rank window，也不替代完整 admissions 明细。
+    所有年份均与同一个 candidate_rank 比较；category / batch 不做跨口径映射。
+    """
+    return admission_service.multi_year_admission_summary(
+        school_id=school_id,
+        source_province=source_province,
+        main_year=main_year,
+        category=category,
+        candidate_rank=candidate_rank,
+        batch=batch,
+    )
+
+
 @router.get("/colleges/{school_id}/admissions")
 def college_admissions(
     school_id: int,

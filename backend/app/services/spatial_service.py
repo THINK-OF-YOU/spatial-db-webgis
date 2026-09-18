@@ -24,6 +24,16 @@ ALL_VERIFY_STATUSES = ["CONFIRMED", "CANDIDATE"]
 # 契约 §4.11 把它写死成这四个值——不接受别的，免得前端传了错值被静默忽略。
 TRANSPORT_MODES = ["rail", "metro", "airport", "rail_halt"]
 
+# Transport V2 搜索与摘要不把 rail_halt 当作筛选类型。
+TRANSPORT_SEARCH_MODES = ["metro", "rail", "airport"]
+
+# 摘要只在合理范围内按类型分别寻找最近 POI，避免无界全国距离扫描。
+TRANSPORT_SUMMARY_RADIUS_KM = {
+    "metro": 10.0,
+    "rail": 30.0,
+    "airport": 80.0,
+}
+
 
 def resolve_verify_status(raw: list[str] | None) -> list[str]:
     """把前端传来的状态列表收敛到合法的两个值。空 → 默认 CONFIRMED。"""
@@ -155,8 +165,8 @@ def nearby_transport(
 
     取"最近校区"用的是 KNN（`<->`）定候选 + geography 定精确距离：`<->` 在 geometry
     上是按度比的，直接拿它当距离会挑错，只能用来挑候选。
-    **注意：当前库里 432 个带几何的 Campus 分属 432 所不同高校，每校最多 1 个**
-    （2026-09-17 实测），所以这条 lateral 现在永远只命中那一个校区——
+    **注意：当前库里 479 个带几何的 Campus 分属 479 所不同高校，每校最多 1 个**
+    （2026-09-18 实测），所以这条 lateral 现在永远只命中那一个校区——
     也就是说"多校区取最近"这条路径**目前没有被数据走到**，是照着校区数据将来变多
     写的。别以为它被测过。
 
@@ -240,6 +250,104 @@ def nearby_transport(
         warnings.append(NO_TRANSPORT_DATA)
 
     return rows, dedupe(warnings)
+
+
+def transport_summary(school_id: int) -> tuple[dict[str, dict | None], list[str]]:
+    """返回指定高校每种主要交通设施各自最近的一条真实事实。
+
+    metro / rail / airport 分别在自己的搜索半径内求最近值，因此不会因最近
+    若干 POI 全是 metro 而错误地把 rail / airport 判成缺失。每个候选仍同时
+    绑定一个 Campus，并按 geography 测地距离做最终排序。
+    """
+    empty = {mode: None for mode in TRANSPORT_SEARCH_MODES}
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            select count(*) as n
+            from campus
+            where school_id = %(school_id)s and geom is not null
+            """,
+            {"school_id": school_id},
+        )
+        if cur.fetchone()["n"] == 0:
+            return empty, dedupe([NO_CAMPUS_FOR_QUERY])
+
+        cur.execute(
+            """
+            with base as (
+                select cp.campus_id, cp.campus_name, cp.geom
+                from campus cp
+                where cp.school_id = %(school_id)s
+                  and cp.geom is not null
+            ),
+            modes(mode, radius_m, sort_order) as (
+                values
+                    ('metro'::text, %(metro_radius_m)s::double precision, 1),
+                    ('rail'::text, %(rail_radius_m)s::double precision, 2),
+                    ('airport'::text, %(airport_radius_m)s::double precision, 3)
+            )
+            select m.mode,
+                   hit.poi_id,
+                   hit.name,
+                   hit.name_zh,
+                   hit.lon,
+                   hit.lat,
+                   hit.campus_id,
+                   hit.campus_name,
+                   hit.distance_m
+            from modes m
+            left join lateral (
+                select p.poi_id,
+                       p.name,
+                       p.name_zh,
+                       st_x(p.geom) as lon,
+                       st_y(p.geom) as lat,
+                       cp.campus_id,
+                       cp.campus_name,
+                       st_distance(p.geom::geography, cp.geom::geography) as distance_m
+                from base cp
+                join poi_transport p
+                  on p.mode = m.mode
+                 and p.geom is not null
+                 and p.geom && st_expand(
+                        cp.geom,
+                        m.radius_m / 111320.0
+                          / greatest(cos(radians(abs(st_y(cp.geom)))), 0.01)
+                     )
+                 and st_dwithin(
+                        p.geom::geography,
+                        cp.geom::geography,
+                        m.radius_m
+                     )
+                order by distance_m, p.poi_id, cp.campus_id
+                limit 1
+            ) hit on true
+            order by m.sort_order
+            """,
+            {
+                "school_id": school_id,
+                "metro_radius_m": TRANSPORT_SUMMARY_RADIUS_KM["metro"] * 1000.0,
+                "rail_radius_m": TRANSPORT_SUMMARY_RADIUS_KM["rail"] * 1000.0,
+                "airport_radius_m": TRANSPORT_SUMMARY_RADIUS_KM["airport"] * 1000.0,
+            },
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+
+    items: dict[str, dict | None] = dict(empty)
+    for row in rows:
+        mode = row.pop("mode")
+        distance_m = row.pop("distance_m", None)
+        if row.get("poi_id") is None or distance_m is None:
+            continue
+        row["mode"] = mode
+        row["distance_km"] = round(distance_m / 1000.0, 2)
+        items[mode] = row
+
+    warnings: list[str] = []
+    if any(item is None for item in items.values()):
+        warnings.append(NO_TRANSPORT_DATA)
+    return items, dedupe(warnings)
 
 
 def _as_geojson_text(geometry: dict) -> str:

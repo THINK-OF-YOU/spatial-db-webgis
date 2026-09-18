@@ -1,4 +1,4 @@
-"""抓取 13 个接口的真实请求/响应，生成 docs/01_接口样例.md。
+"""抓取 14 个接口的真实请求/响应，生成 docs/01_接口样例.md。
 
 在 backend 目录下运行：
 
@@ -57,7 +57,11 @@ def fmt(raw: str) -> str:
     except json.JSONDecodeError:
         pretty = raw
     if len(pretty) > MAX_CHARS:
-        return pretty[:MAX_CHARS] + f"\n  …（已截断，原响应 {len(pretty)} 字符；完整响应看 /docs）"
+        # 截断点可能刚好落在 JSON 缩进或冒号后的空格上；去掉尾随空白，
+        # 避免自动生成文档让 git diff --check 报错。
+        return pretty[:MAX_CHARS].rstrip() + (
+            f"\n  …（已截断，原响应 {len(pretty)} 字符；完整响应看 /docs）"
+        )
     return pretty
 
 
@@ -157,6 +161,7 @@ def main() -> int:
     L.append("| 11 | `GET /api/colleges/{school_id}/majors` | 莫炜钧 |")
     L.append("| 12 | `GET /api/majors` | 莫炜钧 |")
     L.append("| 13 | `GET /api/majors/{major_id}/colleges` | 莫炜钧 |")
+    L.append("| 14 | `GET /api/colleges/{school_id}/transport/summary` | 莫炜钧 |")
     L.append("")
     L.append("> 11–13 是 2026-09-17 数据库恢复专业语义链之后新增的，"
              "详细对接说明见 **`docs/02_专业API对接文档.md`**。")
@@ -253,6 +258,17 @@ def main() -> int:
             {"spatial": {"reference_point": {"lon": lon, "lat": lat}}},
             note="契约 §4.10 的示例把两者成对给出，未规定单独给参考点的语义。"
                  "当前实现：**不筛，只算距离**（不会 500）。")
+    section(L, "9e. 交通空间条件", "POST", "/api/search",
+            {"transport": [
+                {"mode": "metro", "max_distance_km": 2},
+                {"mode": "rail", "max_distance_km": 10},
+            ],
+             "page": 1, "page_size": 20},
+            note="`transport` 是可选的交通条件数组，只允许 `metro / rail / airport`，"
+                 "每种类型最多一条，数组内所有条件按 AND 处理。"
+                 "同一个 Campus 必须同时满足行政区、Polygon、参考点半径与全部交通距离条件。"
+                 "启用时会纳入 `CONFIRMED + CANDIDATE` 校区并返回候选校区 warning；"
+                 "不传、传 `null` 或传空数组时原搜索语义不变。")
 
     L.append("## 10　周边交通　`api/colleges.py` + `services/spatial_service.py`")
     L.append("")
@@ -272,13 +288,18 @@ def main() -> int:
     section(L, "10d. 【查不到样例】压根没有带几何的校区", "GET",
             "/api/colleges/4687/transport",
             note="两种「查不到」必须分开说：这条是「缺校区」，10c 是「缺交通数据」。"
-                 "全库 2,952 所高校只有 432 所有校区，前者是常见情况而非边缘情况，"
+                 "全库 2,952 所高校只有 479 所有校区，前者是常见情况而非边缘情况，"
                  "混成一条会把「缺校区」错说成「缺交通数据」。")
     section(L, "10e. 参数越界 -> 422", "GET", "/api/colleges/3059/transport?mode=train",
             note="`mode` 只允许库内真实值 `rail / metro / airport / rail_halt`。"
                  "越界一律 422，**不静默钳制、也不忽略**——宁可让调用方看见错误，"
                  "也不要返回一个「看起来筛过了其实没筛」的结果。同样适用于 "
                  "`radius_km > 20` 与 `limit > 200`。")
+    section(L, "10f. 最近交通设施事实摘要", "GET",
+            "/api/colleges/2959/transport/summary",
+            note="metro / rail / airport 分别在 10 / 30 / 80 km 有界范围内独立求最近值，"
+                 "避免 V1 列表前若干条全是 metro 时误判另外两类缺失。"
+                 "距离是 POI 到最近 Campus 的测地直线距离；无记录的类型返回 `null`。")
 
     L.append("---")
     L.append("")

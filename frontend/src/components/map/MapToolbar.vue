@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { DrawMode } from './types'
 
-defineProps<{ mode: DrawMode }>()
+defineProps<{ mode: DrawMode; regionOpen: boolean }>()
 const emit = defineEmits<{
   'update:mode': [mode: DrawMode]
+  'update:regionOpen': [open: boolean]
   clear: []
 }>()
 
@@ -18,7 +19,26 @@ const items: { key: DrawMode; label: string; title: string }[] = [
 <template>
   <div class="map-toolbar">
     <button
-      v-for="it in items"
+      v-for="it in items.slice(0, 1)"
+      :key="it.key"
+      type="button"
+      :class="{ active: mode === it.key }"
+      :title="it.title"
+      @click="emit('update:mode', it.key)"
+    >
+      {{ it.label }}
+    </button>
+    <button
+      type="button"
+      :class="{ active: regionOpen }"
+      title="打开或关闭行政区选择器"
+      :aria-pressed="regionOpen"
+      @click="emit('update:regionOpen', !regionOpen)"
+    >
+      行政区
+    </button>
+    <button
+      v-for="it in items.slice(1)"
       :key="it.key"
       type="button"
       :class="{ active: mode === it.key }"

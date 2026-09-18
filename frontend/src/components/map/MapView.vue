@@ -11,7 +11,7 @@ import CampusLayer from './CampusLayer.vue'
 import RegionLayer from './RegionLayer.vue'
 import MapToolbar from './MapToolbar.vue'
 import MapLegend from './MapLegend.vue'
-import TransportPanel from '../transport/TransportPanel.vue'
+import TransportLayer from './TransportLayer.vue'
 
 const store = useSearchStore()
 const { referencePoint, radiusKm, drawnGeometry, selectedCollege } = storeToRefs(store)
@@ -19,6 +19,7 @@ const { referencePoint, radiusKm, drawnGeometry, selectedCollege } = storeToRefs
 const el = ref<HTMLDivElement | null>(null)
 const map = shallowRef<L.Map | null>(null)
 const mode = ref<DrawMode>('browse')
+const regionOpen = ref(false)
 
 // Leaflet 实例一律 markRaw，避免被 Vue 响应式代理（契约 §4：不得入 Pinia，保留在地图组件内）。
 const referenceGroup = markRaw(L.layerGroup())
@@ -30,14 +31,21 @@ let drawStart: L.LatLng | null = null
 let tempRect: L.Rectangle | null = null
 let polyPoints: L.LatLng[] = []
 let tempPolyline: L.Polyline | null = null
+let resizeObserver: ResizeObserver | null = null
+
+function invalidateMapSize() {
+  map.value?.invalidateSize({ pan: false, animate: false })
+}
 
 provide(MAP_KEY, map)
 
 onMounted(() => {
   if (!el.value) return
-  const m = markRaw(L.map(el.value, { center: [35.0, 104.0], zoom: 4, zoomControl: true }))
+  const m = markRaw(L.map(el.value, { center: [35.0, 104.0], zoom: 4, zoomControl: false }))
   // 行政区放独立 pane（低于 overlayPane 400），校区点永远压在上面
   m.createPane('regions').style.zIndex = '380'
+  // 交通 POI 高于普通 Campus 点，低于选中高校与参考点高亮。
+  m.createPane('transport').style.zIndex = '430'
   // 既有参考点和选中光环使用此 pane；必须在渲染前创建。
   m.createPane('marker').style.zIndex = '450'
   markRaw(
@@ -54,11 +62,20 @@ onMounted(() => {
   tempVertexLayer.addTo(m)
   map.value = m
   bindInteractions(m)
+  // MapView 现在作为主画布被浮动侧栏覆盖；监听容器与窗口变化，避免折叠/恢复后 Leaflet 保留旧尺寸。
+  resizeObserver = new ResizeObserver(() => {
+    requestAnimationFrame(invalidateMapSize)
+  })
+  resizeObserver.observe(el.value)
+  window.addEventListener('resize', invalidateMapSize)
   renderReference()
   renderDrawn()
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  window.removeEventListener('resize', invalidateMapSize)
   map.value?.remove()
   map.value = null
 })
@@ -279,6 +296,20 @@ function renderDrawn() {
 
 watch(drawnGeometry, renderDrawn)
 
+// 两个大型地图浮层不长期叠放：列表或 Campus 选择高校时，
+// 行政区面板自动收起；反向打开行政区时先关闭高校详情。
+watch(selectedCollege, (college) => {
+  if (college) regionOpen.value = false
+})
+
+function setRegionOpen(open: boolean) {
+  if (open) {
+    mode.value = 'browse'
+    if (selectedCollege.value) store.setSelectedCollege(null)
+  }
+  regionOpen.value = open
+}
+
 function onClearSpatial() {
   mode.value = 'browse'
   store.clearSpatialFilters()
@@ -288,12 +319,16 @@ function onClearSpatial() {
 <template>
   <div class="map-root">
     <div ref="el" class="map-canvas" :class="`mode-${mode}`"></div>
-    <MapToolbar v-model:mode="mode" @clear="onClearSpatial" />
+    <MapToolbar
+      v-model:mode="mode"
+      :region-open="regionOpen"
+      @update:region-open="setRegionOpen"
+      @clear="onClearSpatial"
+    />
     <MapLegend />
     <CampusLayer />
-    <RegionLayer />
-    <!-- 临时演示入口：点校区选中后浮出周边交通。正式位置在范传智的详情 Drawer。 -->
-    <TransportPanel :school-id="selectedCollege?.school_id ?? null" />
+    <TransportLayer />
+    <RegionLayer :open="regionOpen" @open="setRegionOpen(true)" @close="setRegionOpen(false)" />
   </div>
 </template>
 

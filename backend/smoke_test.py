@@ -25,6 +25,7 @@ import urllib.request
 import uvicorn
 
 from app.main import app
+from app.db.pool import get_cursor
 
 HOST = "127.0.0.1"
 PORT = 8123
@@ -129,6 +130,11 @@ def main() -> int:
             f"counts={p['data']['counts']}"
         ),
     )
+    expect_true(
+        "FastAPI 数据库连接保持只读",
+        isinstance(health, dict) and health.get("data", {}).get("read_only") is True,
+        f"read_only={health.get('data', {}).get('read_only') if isinstance(health, dict) else None}",
+    )
 
     print()
     print("=" * 68)
@@ -186,7 +192,7 @@ def main() -> int:
             f"实际键={sorted(avail)}",
         )
         cps = det["data"].get("campuses") or []
-        # 恰好这 5 个字段。address 曾经在内，但全库 432 行的 address 全是空串，
+        # 恰好这 5 个字段。address 曾经在内，但全库 479 行的 address 全是空串，
         # 返回它只会让前端渲染出一行空白；source / transform_method 等内部列
         # 也不该外泄。用「恰好等于」而不是「不包含」，多一个少一个都算失败。
         expect_true(
@@ -397,6 +403,973 @@ def main() -> int:
         detail=lambda p: f"total={p.get('total')}",
     )
 
+    print()
+    print("=" * 68)
+    print("CandidateProfile V1：位次参考 + 空间组合")
+    print("=" * 68)
+
+    context_response = check(
+        "CandidateProfile 有效考试上下文元数据",
+        "GET",
+        "/api/meta/candidate-profile-contexts",
+        detail=lambda p: f"contexts={len(p.get('data', {}).get('contexts', []))}",
+    )
+    contexts = (
+        context_response.get("data", {}).get("contexts", [])
+        if isinstance(context_response, dict)
+        else []
+    )
+    expect_true(
+        "有效上下文不含 NULL/空 source_province、year、category",
+        bool(contexts)
+        and all(
+            context.get("source_province")
+            and context.get("year") is not None
+            and context.get("category")
+            for context in contexts
+        ),
+        f"检查 {len(contexts)} 个 distinct 上下文",
+    )
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM (
+                SELECT DISTINCT source_province, year, category, batch
+                FROM school_admission
+                WHERE min_rank IS NOT NULL
+                  AND source_province IS NOT NULL
+                  AND source_province <> ''
+                  AND year IS NOT NULL
+                  AND category IS NOT NULL
+                  AND category <> ''
+            ) valid_contexts
+            """
+        )
+        expected_context_count = cur.fetchone()["n"]
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM (
+                SELECT DISTINCT source_province, year, category
+                FROM school_admission
+                WHERE min_rank IS NOT NULL
+                  AND source_province IS NOT NULL
+                  AND source_province <> ''
+                  AND year IS NOT NULL
+                  AND category IS NOT NULL
+                  AND category <> ''
+                  AND batch IS NULL
+            ) null_batch_contexts
+            """
+        )
+        expected_null_batch_context_count = cur.fetchone()["n"]
+        cur.execute(
+            """
+            SELECT DISTINCT category
+            FROM school_admission
+            WHERE min_rank IS NOT NULL
+              AND source_province = '广西'
+              AND year = 2025
+              AND category IS NOT NULL
+              AND category <> ''
+            ORDER BY category
+            """
+        )
+        expected_gx_categories = [row["category"] for row in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT DISTINCT batch
+            FROM school_admission
+            WHERE min_rank IS NOT NULL
+              AND source_province = '广西'
+              AND year = 2025
+              AND category = '物理类'
+              AND batch IS NOT NULL
+              AND batch <> ''
+            ORDER BY batch
+            """
+        )
+        expected_gx_batches = [row["batch"] for row in cur.fetchall()]
+
+    expect_true(
+        "元数据数量与 PostgreSQL DISTINCT 有效上下文一致",
+        len(contexts) == expected_context_count,
+        f"api={len(contexts)}  database={expected_context_count}",
+    )
+    api_null_batch_context_count = sum(
+        context.get("batch") is None for context in contexts
+    )
+    expect_true(
+        "NULL batch 保留为上下文空值，不伪造成真实批次",
+        api_null_batch_context_count == expected_null_batch_context_count,
+        f"api_null={api_null_batch_context_count}  "
+        f"database_null={expected_null_batch_context_count}",
+    )
+    api_gx_categories = sorted(
+        {
+            context["category"]
+            for context in contexts
+            if context["source_province"] == "广西" and context["year"] == 2025
+        }
+    )
+    expect_true(
+        "广西 2025 科类只返回数据库真实值且不含理科",
+        set(api_gx_categories) == set(expected_gx_categories)
+        and "理科" not in api_gx_categories,
+        f"categories={api_gx_categories}",
+    )
+    api_gx_batches = sorted(
+        {
+            context["batch"]
+            for context in contexts
+            if context["source_province"] == "广西"
+            and context["year"] == 2025
+            and context["category"] == "物理类"
+            and context.get("batch")
+        }
+    )
+    expect_true(
+        "广西 2025 物理类批次与数据库真实非空值一致",
+        set(api_gx_batches) == set(expected_gx_batches) and None not in api_gx_batches,
+        f"batches={api_gx_batches}",
+    )
+
+    print()
+    print("-" * 68)
+    print("CandidateProfile V2.0：ScoreRange 分数解析")
+    print("-" * 68)
+
+    score_meta = check(
+        "ScoreRange 可解析上下文元数据",
+        "GET",
+        "/api/meta/score-range-contexts",
+        detail=lambda p: f"contexts={len(p.get('data', {}).get('contexts', []))}",
+    )
+    score_contexts = score_meta.get("data", {}).get("contexts", [])
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM (
+                SELECT source_province, year, category
+                FROM score_range
+                WHERE source_province IS NOT NULL
+                  AND source_province <> ''
+                  AND year IS NOT NULL
+                  AND category IS NOT NULL
+                  AND category <> ''
+                  AND score IS NOT NULL
+                  AND cumulative_count IS NOT NULL
+                GROUP BY source_province, year, category
+            ) contexts
+            """
+        )
+        expected_score_contexts = cur.fetchone()["n"]
+        cur.execute(
+            """
+            SELECT source_province, year, category, score,
+                   COUNT(*) AS rows_n, MIN(cumulative_count) AS resolved_rank
+            FROM score_range
+            WHERE category IS NOT NULL
+              AND score IS NOT NULL
+              AND cumulative_count IS NOT NULL
+            GROUP BY source_province, year, category, score
+            HAVING COUNT(*) > 1
+               AND COUNT(DISTINCT cumulative_count) = 1
+            ORDER BY source_province, year, category, score
+            LIMIT 1
+            """
+        )
+        duplicate_score_sample = dict(cur.fetchone())
+        cur.execute(
+            """
+            SELECT source_province, year, category, score,
+                   COUNT(DISTINCT cumulative_count) AS rank_count
+            FROM score_range
+            WHERE category IS NOT NULL
+              AND score IS NOT NULL
+              AND cumulative_count IS NOT NULL
+            GROUP BY source_province, year, category, score
+            HAVING COUNT(DISTINCT cumulative_count) > 1
+            ORDER BY source_province, year, category, score
+            LIMIT 1
+            """
+        )
+        ambiguous_score_sample = dict(cur.fetchone())
+
+    expect_true(
+        "ScoreRange metadata 只返回 category 非空的真实上下文",
+        len(score_contexts) == expected_score_contexts
+        and bool(score_contexts)
+        and all(context.get("category") for context in score_contexts),
+        f"api={len(score_contexts)}  database={expected_score_contexts}",
+    )
+    expect_true(
+        "ScoreRange metadata 提供有效分数数与真实 min/max",
+        all(
+            context.get("valid_score_count", 0) >= 0
+            and context.get("min_score") is not None
+            and context.get("max_score") is not None
+            for context in score_contexts
+        ),
+        f"检查 {len(score_contexts)} 个上下文",
+    )
+
+    def resolve_path(province, year, category, score):
+        return "/api/meta/score-range/resolve?" + urllib.parse.urlencode(
+            {
+                "source_province": province,
+                "year": year,
+                "category": category,
+                "score": score,
+            }
+        )
+
+    hunan_score = check(
+        "湖南 2024 物理类 600 分解析",
+        "GET",
+        resolve_path("湖南", 2024, "物理类", 600),
+        detail=lambda p: f"status={p.get('data', {}).get('status')}  "
+        f"rank={p.get('data', {}).get('resolved_rank')}",
+    ).get("data", {})
+    expect_true(
+        "湖南 2024 物理类 600 -> 参考位次 14294",
+        hunan_score.get("status") == "resolved"
+        and hunan_score.get("resolved_rank") == 14294,
+        f"data={hunan_score}",
+    )
+
+    duplicate_score = check(
+        "重复行但累计人数相同仍可解析",
+        "GET",
+        resolve_path(
+            duplicate_score_sample["source_province"],
+            duplicate_score_sample["year"],
+            duplicate_score_sample["category"],
+            int(duplicate_score_sample["score"]),
+        ),
+    ).get("data", {})
+    expect_true(
+        "Resolver 以 DISTINCT cumulative_count 判断唯一性",
+        duplicate_score.get("status") == "resolved"
+        and duplicate_score.get("matching_row_count")
+        == duplicate_score_sample["rows_n"]
+        and duplicate_score.get("resolved_rank")
+        == int(duplicate_score_sample["resolved_rank"]),
+        f"sample={duplicate_score_sample}  data={duplicate_score}",
+    )
+
+    ambiguous_score = check(
+        "同分多累计人数明确返回 ambiguous",
+        "GET",
+        resolve_path(
+            ambiguous_score_sample["source_province"],
+            ambiguous_score_sample["year"],
+            ambiguous_score_sample["category"],
+            int(ambiguous_score_sample["score"]),
+        ),
+    ).get("data", {})
+    expect_true(
+        "ambiguous 不猜参考位次",
+        ambiguous_score.get("status") == "ambiguous"
+        and ambiguous_score.get("resolved_rank") is None
+        and ambiguous_score.get("distinct_rank_count")
+        == ambiguous_score_sample["rank_count"],
+        f"sample={ambiguous_score_sample}  data={ambiguous_score}",
+    )
+
+    missing_score = check(
+        "支持上下文中不存在的精确分数返回 not_found",
+        "GET",
+        resolve_path("湖南", 2024, "物理类", 9999),
+    ).get("data", {})
+    expect_true(
+        "not_found 不使用邻近分数",
+        missing_score.get("status") == "not_found"
+        and missing_score.get("resolved_rank") is None,
+        f"data={missing_score}",
+    )
+
+    unsupported_score = check(
+        "无 ScoreRange 的考试上下文返回 unsupported_context",
+        "GET",
+        resolve_path("不存在省份", 2024, "物理类", 600),
+    ).get("data", {})
+    expect_true(
+        "unsupported_context 不伪造参考位次",
+        unsupported_score.get("status") == "unsupported_context"
+        and unsupported_score.get("resolved_rank") is None,
+        f"data={unsupported_score}",
+    )
+    check(
+        "Score Resolver 拒绝小数分数",
+        "GET",
+        resolve_path("湖南", 2024, "物理类", "600.1"),
+        expect=422,
+    )
+    check(
+        "Score Resolver 拒绝负分",
+        "GET",
+        resolve_path("湖南", 2024, "物理类", -1),
+        expect=422,
+    )
+
+    gx_profile_admission = {
+        "source_province": "广西",
+        "year": 2025,
+        "category": "物理类",
+        "rank": 10000,
+        "rank_ahead": 3000,
+        "rank_behind": 8000,
+    }
+    gx_profile = check(
+        "CandidateProfile 广西/2025/物理类/全部批次/位次10000",
+        "POST",
+        "/api/search",
+        {"admission": gx_profile_admission, "page_size": 100},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "广西真实考试上下文的位次查询仍能返回高校",
+        (gx_profile.get("total") or 0) > 0,
+        f"total={gx_profile.get('total')}",
+    )
+    gx_zero = check(
+        "合法广西考试上下文 + 极窄位次窗口 -> 0",
+        "POST",
+        "/api/search",
+        {
+            "admission": {
+                **gx_profile_admission,
+                "rank": 1,
+                "rank_ahead": 0,
+                "rank_behind": 0,
+            }
+        },
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "合法考试上下文允许真实返回 0，不误判为上下文错误",
+        gx_zero.get("total") == 0 and gx_zero.get("items") == [],
+        f"total={gx_zero.get('total')}",
+    )
+
+    profile_admission = {
+        "source_province": "湖南",
+        "year": 2024,
+        "category": "物理类",
+        "rank": 20000,
+        "rank_ahead": 3000,
+        "rank_behind": 8000,
+    }
+    profile = check(
+        "CandidateProfile 湖南/2024/物理类/位次20000",
+        "POST",
+        "/api/search",
+        {"admission": profile_admission, "page_size": 100},
+        detail=lambda p: f"total={p.get('total')}  本页={len(p.get('items', []))}",
+    )
+    profile_items = (profile.get("items") or []) if isinstance(profile, dict) else []
+    references = [item.get("reference_admission") for item in profile_items]
+    expect_true(
+        "CandidateProfile 返回真实高校与代表历史事实",
+        (profile.get("total") or 0) > 0 and profile_items and all(references),
+        f"total={profile.get('total')}  refs={sum(bool(r) for r in references)}",
+    )
+    expect_true(
+        "代表事实 min_rank 全部位于 17000～28000 且不含 NULL",
+        bool(references)
+        and all(17000 <= ref["min_rank"] <= 28000 for ref in references if ref),
+        f"检查本页 {len(references)} 条",
+    )
+    expect_true(
+        "rank_gap 统一等于 historical_min_rank - candidate_rank",
+        bool(references)
+        and all(ref["rank_gap"] == ref["min_rank"] - 20000 for ref in references if ref),
+        "逐条比对通过",
+    )
+    expect_true(
+        "每校只有一条代表事实，且按 ABS(rank_gap) 升序",
+        len({item["school_id"] for item in profile_items}) == len(profile_items)
+        and [abs(ref["rank_gap"]) for ref in references if ref]
+        == sorted(abs(ref["rank_gap"]) for ref in references if ref),
+        f"本页 {len(profile_items)} 所",
+    )
+
+    multi_school = None
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.school_id, COUNT(*) AS fact_count
+            FROM school_admission a
+            JOIN school_unit u ON u.unit_id = a.unit_id
+            WHERE a.source_province = %(source_province)s
+              AND a.year = %(year)s
+              AND a.category = %(category)s
+              AND a.min_rank IS NOT NULL
+              AND a.min_rank BETWEEN 17000 AND 28000
+            GROUP BY u.school_id
+            HAVING COUNT(*) > 1
+            ORDER BY MIN(ABS(a.min_rank - 20000)), u.school_id
+            LIMIT 1
+            """,
+            {
+                "source_province": "湖南",
+                "year": 2024,
+                "category": "物理类",
+            },
+        )
+        row = cur.fetchone()
+        multi_school = dict(row) if row else None
+    representative = next(
+        (
+            item
+            for item in profile_items
+            if multi_school and item["school_id"] == multi_school["school_id"]
+        ),
+        None,
+    )
+    expect_true(
+        "找到位次窗口内同一 College 存在多条投档事实的真实样本",
+        multi_school is not None and representative is not None,
+        f"sample={multi_school}",
+    )
+    if representative:
+        sid = representative["school_id"]
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id, a.unit_id, a.min_rank
+                FROM school_admission a
+                JOIN school_unit u ON u.unit_id = a.unit_id
+                WHERE u.school_id = %(school_id)s
+                  AND a.source_province = %(source_province)s
+                  AND a.year = %(year)s
+                  AND a.category = %(category)s
+                  AND a.min_rank IS NOT NULL
+                  AND a.min_rank BETWEEN 17000 AND 28000
+                ORDER BY ABS(a.min_rank - 20000), a.min_rank, a.id
+                LIMIT 1
+                """,
+                {
+                    "school_id": sid,
+                    "source_province": "湖南",
+                    "year": 2024,
+                    "category": "物理类",
+                },
+            )
+            expected_ref = dict(cur.fetchone())
+        actual_ref = representative["reference_admission"]
+        expect_true(
+            "同校多事实时选择 ABS 位次差最小且 tie-breaker 确定的一条",
+            actual_ref["admission_id"] == expected_ref["id"]
+            and actual_ref["unit_id"] == expected_ref["unit_id"]
+            and actual_ref["min_rank"] == int(expected_ref["min_rank"]),
+            f"school_id={sid}  candidates={multi_school['fact_count']}  "
+            f"admission_id={actual_ref['admission_id']}",
+        )
+
+    narrow = check(
+        "CandidateProfile 缩窄位次窗口 1000/3000",
+        "POST",
+        "/api/search",
+        {
+            "admission": {
+                **profile_admission,
+                "rank_ahead": 1000,
+                "rank_behind": 3000,
+            }
+        },
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "缩窄窗口结果不增加",
+        0 <= (narrow.get("total") or 0) <= (profile.get("total") or 0),
+        f"{narrow.get('total')} <= {profile.get('total')}",
+    )
+
+    first_batch = next((ref.get("batch") for ref in references if ref and ref.get("batch")), None)
+    if first_batch:
+        by_batch = check(
+            f"CandidateProfile 指定真实 batch={first_batch}",
+            "POST",
+            "/api/search",
+            {"admission": {**profile_admission, "batch": first_batch}, "page_size": 100},
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        batch_refs = [it.get("reference_admission") for it in (by_batch.get("items") or [])]
+        expect_true(
+            "指定 batch 后代表事实只来自该批次",
+            bool(batch_refs) and all(ref and ref.get("batch") == first_batch for ref in batch_refs),
+            f"检查本页 {len(batch_refs)} 条",
+        )
+
+    check(
+        "CandidateProfile rank=0 -> 422",
+        "POST",
+        "/api/search",
+        {"admission": {**profile_admission, "rank": 0}},
+        expect=422,
+    )
+    check(
+        "CandidateProfile 缺少 category -> 422",
+        "POST",
+        "/api/search",
+        {"admission": {k: v for k, v in profile_admission.items() if k != "category"}},
+        expect=422,
+    )
+    check(
+        "未提供 rank 却提供 rank_ahead -> 422",
+        "POST",
+        "/api/search",
+        {"admission": {"source_province": "湖南", "rank_ahead": 1000}},
+        expect=422,
+    )
+
+    # 从当前真实位次集合中取一个有 Campus 且能落入行政区的高校，避免硬编码校区。
+    spatial_fixture = None
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            WITH profile_schools AS (
+                SELECT DISTINCT u.school_id
+                FROM school_admission a
+                JOIN school_unit u ON u.unit_id = a.unit_id
+                WHERE a.source_province = %(source_province)s
+                  AND a.year = %(year)s
+                  AND a.category = %(category)s
+                  AND a.min_rank IS NOT NULL
+                  AND a.min_rank BETWEEN 17000 AND 28000
+            )
+            SELECT cp.school_id,
+                   ST_X(cp.geom) AS lon,
+                   ST_Y(cp.geom) AS lat,
+                   ar.adcode
+            FROM profile_schools ps
+            JOIN campus cp ON cp.school_id = ps.school_id AND cp.geom IS NOT NULL
+            JOIN LATERAL (
+                SELECT r.adcode
+                FROM admin_region r
+                WHERE r.geom IS NOT NULL AND ST_Covers(r.geom, cp.geom)
+                ORDER BY CASE r.level
+                    WHEN 'district' THEN 1 WHEN 'city' THEN 2 ELSE 3 END,
+                    r.adcode
+                LIMIT 1
+            ) ar ON TRUE
+            ORDER BY cp.school_id
+            LIMIT 1
+            """,
+            {
+                "source_province": "湖南",
+                "year": 2024,
+                "category": "物理类",
+            },
+        )
+        row = cur.fetchone()
+        spatial_fixture = dict(row) if row else None
+
+    expect_true(
+        "真实画像结果中存在可用于空间组合验收的 Campus",
+        spatial_fixture is not None,
+        f"fixture={spatial_fixture}",
+    )
+    if spatial_fixture:
+        profile_spatial = {
+            "admission": profile_admission,
+            "spatial": {"include_candidate_campus": True},
+        }
+        region_profile = check(
+            "CandidateProfile + AdminRegion",
+            "POST",
+            "/api/search",
+            {**profile_spatial, "regions": [spatial_fixture["adcode"]]},
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        expect_true(
+            "画像与行政区按 AND 组合且能命中真实高校",
+            (region_profile.get("total") or 0) > 0,
+            f"total={region_profile.get('total')}",
+        )
+
+        radius_profile = check(
+            "CandidateProfile + ReferencePoint + Radius",
+            "POST",
+            "/api/search",
+            {
+                "admission": profile_admission,
+                "spatial": {
+                    "reference_point": {
+                        "lon": spatial_fixture["lon"],
+                        "lat": spatial_fixture["lat"],
+                    },
+                    "radius_km": 10,
+                    "include_candidate_campus": True,
+                },
+            },
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        expect_true(
+            "画像与 ST_DWithin 按 AND 组合",
+            (radius_profile.get("total") or 0) > 0,
+            f"total={radius_profile.get('total')}",
+        )
+
+        polygon_profile = check(
+            "CandidateProfile + Polygon",
+            "POST",
+            "/api/search",
+            {
+                "admission": profile_admission,
+                "spatial": {
+                    "geometry": box_around(
+                        spatial_fixture["lon"], spatial_fixture["lat"], 0.05
+                    ),
+                    "include_candidate_campus": True,
+                },
+            },
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        expect_true(
+            "画像与 Polygon 按 AND 组合",
+            (polygon_profile.get("total") or 0) > 0,
+            f"total={polygon_profile.get('total')}",
+        )
+
+    zero_profile = check(
+        "CandidateProfile + 无高校海域 Polygon -> 0",
+        "POST",
+        "/api/search",
+        {
+            "admission": profile_admission,
+            "spatial": {
+                "geometry": box_around(0, 0, 0.05),
+                "include_candidate_campus": True,
+            },
+        },
+        detail=lambda p: f"total={p.get('total')}  items={len(p.get('items', []))}",
+    )
+    expect_true(
+        "0 结果保持为空，不回退为普通 Campus",
+        zero_profile.get("total") == 0 and zero_profile.get("items") == [],
+        f"total={zero_profile.get('total')}",
+    )
+
+    legacy_admission = check(
+        "不传 rank 的旧招生筛选回归",
+        "POST",
+        "/api/search",
+        {"admission": {"source_province": "湖南", "year": 2024, "category": "物理类"}},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "旧招生筛选仍可用且不夹带 reference_admission",
+        (legacy_admission.get("total") or 0) >= (profile.get("total") or 0)
+        and all("reference_admission" not in item for item in legacy_admission.get("items") or []),
+        f"legacy={legacy_admission.get('total')}  profile={profile.get('total')}",
+    )
+
+    print()
+    print("=" * 68)
+    print("莫炜钧：9f 交通多条件组合（Transport V2.1）")
+    print("=" * 68)
+
+    transport_single = {
+        "transport": [{"mode": "metro", "max_distance_km": 2}],
+        "page": 1,
+        "page_size": 100,
+    }
+    transport_dual_rail = {
+        "transport": [
+            {"mode": "metro", "max_distance_km": 2},
+            {"mode": "rail", "max_distance_km": 10},
+        ],
+        "page": 1,
+        "page_size": 100,
+    }
+    transport_dual_airport = {
+        "transport": [
+            {"mode": "metro", "max_distance_km": 2},
+            {"mode": "airport", "max_distance_km": 30},
+        ],
+        "page": 1,
+        "page_size": 100,
+    }
+    transport_triple = {
+        "transport": [
+            {"mode": "metro", "max_distance_km": 2},
+            {"mode": "rail", "max_distance_km": 10},
+            {"mode": "airport", "max_distance_km": 50},
+        ],
+        "page": 1,
+        "page_size": 100,
+    }
+
+    transport_single_result = check(
+        "Transport 单条件 metro <= 2km",
+        "POST",
+        "/api/search",
+        transport_single,
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    transport_dual_rail_result = check(
+        "Transport 双条件 metro AND rail",
+        "POST",
+        "/api/search",
+        transport_dual_rail,
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    transport_dual_airport_result = check(
+        "Transport 双条件 metro AND airport",
+        "POST",
+        "/api/search",
+        transport_dual_airport,
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    transport_triple_result = check(
+        "Transport 三条件 metro AND rail AND airport",
+        "POST",
+        "/api/search",
+        transport_triple,
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    for label, payload in (
+        ("单条件", transport_single_result),
+        ("双条件 rail", transport_dual_rail_result),
+        ("双条件 airport", transport_dual_airport_result),
+        ("三条件", transport_triple_result),
+    ):
+        expect_true(
+            f"{label} 返回唯一高校结果源形状",
+            isinstance(payload, dict)
+            and isinstance(payload.get("items"), list)
+            and isinstance(payload.get("total"), int)
+            and len({item.get("school_id") for item in payload.get("items") or []})
+            == len(payload.get("items") or []),
+            f"payload={payload if not isinstance(payload, dict) else {'total': payload.get('total')}}",
+        )
+        if isinstance(payload, dict):
+            expect_true(
+                f"{label} 保留候选校区 warning",
+                "本次空间查询包含候选校区" in (payload.get("warnings") or []),
+                f"warnings={payload.get('warnings')}",
+            )
+
+    expect_true(
+        "多条件 AND 结果不超过对应单条件",
+        isinstance(transport_single_result, dict)
+        and isinstance(transport_dual_rail_result, dict)
+        and isinstance(transport_dual_airport_result, dict)
+        and isinstance(transport_triple_result, dict)
+        and transport_dual_rail_result.get("total", 0) <= transport_single_result.get("total", 0)
+        and transport_dual_airport_result.get("total", 0) <= transport_single_result.get("total", 0)
+        and transport_triple_result.get("total", 0)
+        <= transport_dual_rail_result.get("total", 0),
+        f"single={transport_single_result.get('total')}  "
+        f"dual_rail={transport_dual_rail_result.get('total')}  "
+        f"dual_airport={transport_dual_airport_result.get('total')}  "
+        f"triple={transport_triple_result.get('total')}",
+    )
+
+    no_transport = check(
+        "Transport = [] 按关闭处理",
+        "POST",
+        "/api/search",
+        {"transport": [], "page": 1, "page_size": 20},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    no_transport_null = check(
+        "Transport = null 按关闭处理",
+        "POST",
+        "/api/search",
+        {"transport": None, "page": 1, "page_size": 20},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    legacy_no_transport = check(
+        "Transport 不传保持原搜索语义",
+        "POST",
+        "/api/search",
+        {"page": 1, "page_size": 20},
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "Transport 关闭的三种写法结果一致",
+        all(
+            isinstance(payload, dict)
+            for payload in (no_transport, no_transport_null, legacy_no_transport)
+        )
+        and no_transport.get("total") == no_transport_null.get("total")
+        == legacy_no_transport.get("total")
+        and [item.get("school_id") for item in no_transport.get("items") or []]
+        == [item.get("school_id") for item in legacy_no_transport.get("items") or []],
+        f"[]={no_transport.get('total')} null={no_transport_null.get('total')} "
+        f"omitted={legacy_no_transport.get('total')}",
+    )
+
+    # 与既有招生画像、行政区、Polygon、参考点分别叠加，确认 Transport
+    # 仍沿用 /search 的单一 Campus 空间链，而不是另起一套结果查询。
+    if spatial_fixture:
+        transport_combo = transport_dual_rail["transport"]
+        profile_transport = check(
+            "CandidateProfile + Transport 多条件",
+            "POST",
+            "/api/search",
+            {"admission": profile_admission, "transport": transport_combo},
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        region_transport = check(
+            "AdminRegion + Transport 多条件",
+            "POST",
+            "/api/search",
+            {"regions": [spatial_fixture["adcode"]], "transport": transport_combo},
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        polygon_transport = check(
+            "Polygon + Transport 多条件",
+            "POST",
+            "/api/search",
+            {
+                "spatial": {
+                    "geometry": box_around(
+                        spatial_fixture["lon"], spatial_fixture["lat"], 0.05
+                    ),
+                    "include_candidate_campus": True,
+                },
+                "transport": transport_combo,
+            },
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        radius_transport = check(
+            "ReferencePoint + Radius + Transport 多条件",
+            "POST",
+            "/api/search",
+            {
+                "spatial": {
+                    "reference_point": {
+                        "lon": spatial_fixture["lon"],
+                        "lat": spatial_fixture["lat"],
+                    },
+                    "radius_km": 10,
+                    "include_candidate_campus": True,
+                },
+                "transport": transport_combo,
+            },
+            detail=lambda p: f"total={p.get('total')}",
+        )
+        expect_true(
+            "既有招生/行政区/Polygon/参考点与 Transport 组合均有真实结果",
+            all(
+                isinstance(payload, dict) and (payload.get("total") or 0) > 0
+                for payload in (
+                    profile_transport,
+                    region_transport,
+                    polygon_transport,
+                    radius_transport,
+                )
+            ),
+            " / ".join(
+                str(payload.get("total") if isinstance(payload, dict) else None)
+                for payload in (
+                    profile_transport,
+                    region_transport,
+                    polygon_transport,
+                    radius_transport,
+                )
+            ),
+        )
+
+    # 正式库当前每校只有一个带几何 Campus，无法从真实行构造跨校区反例；
+    # 用只读 CTE 构造两个 Campus 分别满足 metro / rail，复现同一 EXISTS
+    # 结构，结果必须为 false。CTE 不落盘，也不触碰正式数据。
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            WITH campuses(school_id, geom) AS (
+                VALUES
+                    (1, ST_SetSRID(ST_Point(0, 0), 4326)),
+                    (1, ST_SetSRID(ST_Point(1, 1), 4326))
+            ), pois(mode, geom) AS (
+                VALUES
+                    ('metro', ST_SetSRID(ST_Point(0.005, 0.0), 4326)),
+                    ('rail', ST_SetSRID(ST_Point(1.005, 1.0), 4326))
+            )
+            SELECT EXISTS (
+                SELECT 1 FROM campuses cp
+                WHERE EXISTS (
+                    SELECT 1 FROM pois p
+                    WHERE p.mode = 'metro'
+                      AND p.geom && ST_Expand(cp.geom, 0.02)
+                      AND ST_DWithin(
+                          p.geom::geography, cp.geom::geography, 2000
+                      )
+                )
+                AND EXISTS (
+                    SELECT 1 FROM pois p
+                    WHERE p.mode = 'rail'
+                      AND p.geom && ST_Expand(cp.geom, 0.02)
+                      AND ST_DWithin(
+                          p.geom::geography, cp.geom::geography, 2000
+                      )
+                )
+            ) AS cross_campus_should_not_match
+            """
+        )
+        same_campus_fixture = not bool(cur.fetchone()["cross_campus_should_not_match"])
+    expect_true(
+        "Same-Campus Binding 拒绝不同 Campus 分别满足交通条件",
+        same_campus_fixture,
+        "只读 CTE fixture: metro 在 Campus A、rail 在 Campus B 时不命中",
+    )
+
+    check(
+        "Transport 重复 mode -> 422",
+        "POST",
+        "/api/search",
+        {
+            "transport": [
+                {"mode": "metro", "max_distance_km": 1},
+                {"mode": "metro", "max_distance_km": 3},
+            ]
+        },
+        expect=422,
+    )
+    check(
+        "Transport 非法 mode -> 422",
+        "POST",
+        "/api/search",
+        {"transport": [{"mode": "rail_halt", "max_distance_km": 5}]},
+        expect=422,
+    )
+    check(
+        "Transport distance <= 0 -> 422",
+        "POST",
+        "/api/search",
+        {"transport": [{"mode": "metro", "max_distance_km": 0}]},
+        expect=422,
+    )
+    check(
+        "Transport distance > 100 -> 422",
+        "POST",
+        "/api/search",
+        {"transport": [{"mode": "airport", "max_distance_km": 101}]},
+        expect=422,
+    )
+    check(
+        "Transport 超过 3 条 -> 422",
+        "POST",
+        "/api/search",
+        {
+            "transport": [
+                {"mode": "metro", "max_distance_km": 1},
+                {"mode": "rail", "max_distance_km": 3},
+                {"mode": "airport", "max_distance_km": 20},
+                {"mode": "metro", "max_distance_km": 2},
+            ]
+        },
+        expect=422,
+    )
+
     # 招生条件不再单独在这里测 501 —— 倪嵩实现后见下一节的真实筛选检查。
 
     print()
@@ -404,13 +1377,27 @@ def main() -> int:
     print("莫炜钧：10 周边交通（API 10，契约 §4.11）")
     print("=" * 68)
 
-    # 三所高校是照库里实测结果挑的，不是随手写的（2026-09-17 实测）：
+    # 前两所高校是照库里实测结果挑的（2026-09-17 实测）：
     #   3059 天津医科大学            1 个校区，3km 内 39 个站点（metro 38 + rail 1）
     #   2954 盐城幼儿师范高等专科学校  1 个校区，3km 内 0 个站点
-    #   4687 华中师范大学            压根没有带几何的校区
+    # Campus 数据会增量增强，因此“无校区高校”不能长期硬编码，需从当前库动态选择。
     # 注意 3059 那一行：默认 limit=20，所以下面的 base 只会拿到 20 条而不是 39 条，
     # 拿它当"筛窄了"的对照基准没问题。
-    HAS_STATION, NO_STATION, NO_CAMPUS = 3059, 2954, 4687
+    HAS_STATION, NO_STATION = 3059, 2954
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.school_id
+            FROM college c
+            WHERE NOT EXISTS (
+                SELECT 1 FROM campus cp
+                WHERE cp.school_id = c.school_id AND cp.geom IS NOT NULL
+            )
+            ORDER BY c.school_id
+            LIMIT 1
+            """
+        )
+        NO_CAMPUS = cur.fetchone()["school_id"]
 
     # 抄自契约 §4.11。**故意不从 spatial_service 里 import**——
     # 否则常量被改错时测试会跟着一起错，等于没测。
@@ -722,6 +1709,204 @@ def main() -> int:
         detail=lambda p: f"total={p.get('total')}  items={len(p.get('items', []))}",
     )
 
+    # ── CandidateProfile V1.2：校内专业历史位次联动 ─────────────────
+    MAJOR_PROFILE_KEYS = MAJOR_KEYS | {
+        "expr_id", "representative_admission_id", "unit_id", "unit_name",
+        "group_id", "professional_rank_gap",
+    }
+    gx_profile_school_ids = {
+        item.get("school_id") for item in (gx_profile.get("items") or [])
+    }
+    PROFILE_MAJOR_SCHOOL = 3640  # 华东理工大学，当前广西画像结果内且有多事实 expr
+    expect_true(
+        "V1.2 测试高校来自当前 CandidateProfile 学校结果",
+        PROFILE_MAJOR_SCHOOL in gx_profile_school_ids,
+        f"school_id={PROFILE_MAJOR_SCHOOL}  候选高校={len(gx_profile_school_ids)}",
+    )
+    profile_major = check(
+        "CandidateProfile + College -> 专业历史位次",
+        "GET",
+        f"/api/colleges/{PROFILE_MAJOR_SCHOOL}/majors?"
+        "source_province=广西&year=2025&category=物理类&"
+        "candidate_rank=10000&page_size=50",
+        detail=lambda p: f"total={p.get('total')}  本页={len(p.get('items', []))}",
+    )
+    profile_major_items = profile_major.get("items") or []
+    expect_true(
+        "V1.2 响应明确回显唯一 CandidateProfile 上下文",
+        profile_major.get("candidate_profile_applied") is True
+        and profile_major.get("candidate_profile") == {
+            "source_province": "广西",
+            "year": 2025,
+            "category": "物理类",
+            "batch": None,
+            "rank": 10000,
+        },
+        f"candidate_profile={profile_major.get('candidate_profile')}",
+    )
+    expect_true(
+        "V1.2 专业行包含 expr / 代表事实 / 招生单位 / 位次差字段",
+        bool(profile_major_items)
+        and all(set(item) == MAJOR_PROFILE_KEYS for item in profile_major_items),
+        f"检查 {len(profile_major_items)} 条",
+    )
+    expect_true(
+        "V1.2 只返回广西/2025/物理类且每个 expr_id 唯一",
+        bool(profile_major_items)
+        and all(
+            item["source_province"] == "广西"
+            and item["year"] == 2025
+            and item["category"] == "物理类"
+            for item in profile_major_items
+        )
+        and len({item["expr_id"] for item in profile_major_items})
+        == len(profile_major_items),
+        f"items={len(profile_major_items)}",
+    )
+    ranked_profile_majors = [
+        item for item in profile_major_items if item.get("min_rank") is not None
+    ]
+    expect_true(
+        "至少 5 个真实专业的 professional_rank_gap 计算正确",
+        len(ranked_profile_majors) >= 5
+        and all(
+            item["professional_rank_gap"] == item["min_rank"] - 10000
+            for item in ranked_profile_majors
+        ),
+        ", ".join(
+            f"{item['raw_major_name']}:{item['min_rank']}/{item['professional_rank_gap']}"
+            for item in ranked_profile_majors[:5]
+        ),
+    )
+    expect_true(
+        "有位次专业按 ABS(professional_rank_gap) 升序",
+        [abs(item["professional_rank_gap"]) for item in ranked_profile_majors]
+        == sorted(abs(item["professional_rank_gap"]) for item in ranked_profile_majors),
+        f"检查 {len(ranked_profile_majors)} 条",
+    )
+    expect_true(
+        "V1.2 不依赖标准 Major 映射也能返回专业",
+        bool(profile_major_items)
+        and all(item.get("std_major") is None for item in profile_major_items),
+        f"unmapped={sum(item.get('std_major') is None for item in profile_major_items)}",
+    )
+
+    MULTI_EXPR = 480521
+    multi_expr_item = next(
+        (item for item in profile_major_items if item.get("expr_id") == MULTI_EXPR),
+        None,
+    )
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT ma.id, ma.min_rank
+            FROM major_admission ma
+            JOIN school_unit u ON u.unit_id = ma.unit_id
+            WHERE u.school_id = %(school_id)s
+              AND ma.source_province = '广西'
+              AND ma.year = 2025
+              AND ma.category = '物理类'
+              AND ma.expr_id = %(expr_id)s
+            ORDER BY CASE WHEN ma.min_rank IS NULL THEN 1 ELSE 0 END,
+                     ABS(ma.min_rank - 10000) NULLS LAST,
+                     ma.min_rank NULLS LAST,
+                     ma.id,
+                     ma.unit_id
+            LIMIT 1
+            """,
+            {"school_id": PROFILE_MAJOR_SCHOOL, "expr_id": MULTI_EXPR},
+        )
+        expected_multi_expr = dict(cur.fetchone())
+    expect_true(
+        "同一 expr_id 多事实按最小 ABS 位次差选择代表 MajorAdmission",
+        multi_expr_item is not None
+        and multi_expr_item["representative_admission_id"] == expected_multi_expr["id"]
+        and multi_expr_item["min_rank"] == int(expected_multi_expr["min_rank"]),
+        f"expr_id={MULTI_EXPR}  expected={expected_multi_expr}  "
+        f"actual={multi_expr_item and multi_expr_item.get('representative_admission_id')}",
+    )
+    expect_true(
+        "学校级 7000～18000 位次窗口不会删除校内专业",
+        any(
+            item["min_rank"] < 7000 or item["min_rank"] > 18000
+            for item in ranked_profile_majors
+        ),
+        "专业查询未接收 rank_ahead/rank_behind，且真实结果含窗口外位次",
+    )
+
+    tie_profile = check(
+        "V1.2 真实同差值样本",
+        "GET",
+        "/api/colleges/3571/majors?source_province=广西&year=2025&"
+        "category=物理类&candidate_rank=10000&page_size=100",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    tie_item = next(
+        (item for item in (tie_profile.get("items") or []) if item.get("expr_id") == 467420),
+        None,
+    )
+    expect_true(
+        "同绝对差且同 min_rank 时以 major_admission.id 稳定决胜",
+        tie_item is not None and tie_item.get("representative_admission_id") == 2714241,
+        f"actual={tie_item and tie_item.get('representative_admission_id')}",
+    )
+
+    all_batches = check(
+        "V1.2 全部批次",
+        "GET",
+        "/api/colleges/5122/majors?source_province=广西&year=2025&"
+        "category=物理类&candidate_rank=10000&page_size=100",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    bachelor_batch = check(
+        "V1.2 指定本科批",
+        "GET",
+        "/api/colleges/5122/majors?source_province=广西&year=2025&"
+        "category=物理类&batch=本科批&candidate_rank=10000&page_size=100",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    expect_true(
+        "指定 batch 后专业代表事实只来自同一批次",
+        0 < (bachelor_batch.get("total") or 0) <= (all_batches.get("total") or 0)
+        and all(item.get("batch") == "本科批" for item in bachelor_batch.get("items") or []),
+        f"all={all_batches.get('total')}  本科批={bachelor_batch.get('total')}",
+    )
+
+    null_rank_profile = check(
+        "V1.2 min_rank NULL 专业保留",
+        "GET",
+        "/api/colleges/4679/majors?source_province=湖北&year=2024&"
+        "category=物理类&candidate_rank=50000&page_size=100",
+        detail=lambda p: f"total={p.get('total')}",
+    )
+    null_rank_items = [
+        item for item in (null_rank_profile.get("items") or [])
+        if item.get("min_rank") is None
+    ]
+    expect_true(
+        "缺专业历史位次的真实表达在列表尾部且 rank_gap=null",
+        bool(null_rank_items)
+        and all(item.get("professional_rank_gap") is None for item in null_rank_items)
+        and all(
+            item.get("min_rank") is None
+            for item in (null_rank_profile.get("items") or [])[-len(null_rank_items):]
+        ),
+        f"NULL rank 专业={len(null_rank_items)}",
+    )
+    check(
+        "candidate_rank 缺少考试上下文 -> 422",
+        "GET",
+        f"/api/colleges/{PROFILE_MAJOR_SCHOOL}/majors?candidate_rank=10000",
+        expect=422,
+    )
+    expect_true(
+        "无 CandidateProfile 时旧专业接口保持 legacy 模式",
+        mj.get("candidate_profile_applied") is False
+        and mj.get("candidate_profile") is None
+        and bool(mj_items),
+        f"legacy total={mj.get('total')}",
+    )
+
     # ── data_availability 两个专业键的区分 ───────────────────────────
     # 这组是「未建立标准映射 ≠ 没有该专业」在接口层面的落地检查。
     # 3877 有 638 条专业事实却零条 Tier 1 映射：如果只留一个 major_mapping，
@@ -978,6 +2163,200 @@ def main() -> int:
         "涉及 category 时给出「来源原始口径」提示",
         "当前科类/批次使用来源数据原始口径" in (filtered.get("warnings") or []),
         f"warnings={filtered.get('warnings')}",
+    )
+
+    # ── CandidateProfile V2.1 学校级多年度历史参考 ────────────────
+    summary = check(
+        "admissions/summary 多年度真实样例",
+        "GET",
+        "/api/colleges/4687/admissions/summary"
+        "?source_province=浙江&main_year=2025&category=综合&candidate_rank=20000",
+        detail=lambda p: (
+            f"years={[y.get('year') for y in p.get('years', [])]}  "
+            f"statuses={[y.get('status') for y in p.get('years', [])]}"
+        ),
+    )
+    summary_years = summary.get("years") or []
+    expect_true(
+        "summary request/response context 原样返回",
+        summary.get("school_id") == 4687
+        and summary.get("context")
+        == {
+            "source_province": "浙江",
+            "main_year": 2025,
+            "category": "综合",
+            "batch": None,
+            "candidate_rank": 20000,
+        },
+        f"context={summary.get('context')}",
+    )
+    expect_true(
+        "comparable years 按 2025→2024→2023 降序生成",
+        [y.get("year") for y in summary_years] == [2025, 2024, 2023],
+        f"years={[y.get('year') for y in summary_years]}",
+    )
+    expected_references = {
+        2025: (12, 337992, 20890, 890),
+        2024: (9, 338335, 12844, -7156),
+        2023: (17, 338525, 11622, -8378),
+    }
+    actual_references = {
+        y.get("year"): (
+            y.get("record_count"),
+            (y.get("reference_admission") or {}).get("admission_id"),
+            (y.get("reference_admission") or {}).get("min_rank"),
+            (y.get("reference_admission") or {}).get("rank_gap"),
+        )
+        for y in summary_years
+    }
+    expect_true(
+        "每年 record_count、最近代表事实与 rank_gap 正确",
+        actual_references == expected_references,
+        f"actual={actual_references}",
+    )
+    expect_true(
+        "summary 不受主查询 rank window 限制",
+        any(
+            y.get("year") == 2023
+            and abs((y.get("reference_admission") or {}).get("rank_gap", 0)) > 3000
+            for y in summary_years
+        ),
+        "2023 代表事实与当前位次相差 8378，仍被返回",
+    )
+    expect_true(
+        "全部批次时每年返回代表事实的真实 batch",
+        all(
+            (y.get("reference_admission") or {}).get("batch")
+            for y in summary_years
+        ),
+        str([(y.get("year"), (y.get("reference_admission") or {}).get("batch")) for y in summary_years]),
+    )
+
+    summary_2024 = check(
+        "admissions/summary 主参考年份 2024",
+        "GET",
+        "/api/colleges/4687/admissions/summary"
+        "?source_province=浙江&main_year=2024&category=综合&candidate_rank=20000",
+    )
+    expect_true(
+        "year <= main_year，不自动混入 2025",
+        [y.get("year") for y in (summary_2024.get("years") or [])]
+        == [2024, 2023],
+        f"years={[y.get('year') for y in (summary_2024.get('years') or [])]}",
+    )
+
+    province_exact = check(
+        "admissions/summary 生源省严格同值",
+        "GET",
+        "/api/colleges/4687/admissions/summary"
+        "?source_province=浙江省&main_year=2025&category=综合&candidate_rank=20000",
+    )
+    expect_true(
+        "source_province 不做 浙江省→浙江 归一化",
+        province_exact.get("years") == [],
+        f"years={province_exact.get('years')}",
+    )
+    category_exact = check(
+        "admissions/summary 科类严格同值",
+        "GET",
+        "/api/colleges/4687/admissions/summary"
+        "?source_province=浙江&main_year=2025&category=综合类&candidate_rank=20000",
+    )
+    expect_true(
+        "category 不做 综合类→综合 归一化",
+        category_exact.get("years") == [],
+        f"years={category_exact.get('years')}",
+    )
+
+    no_record_summary = check(
+        "admissions/summary 显式 no_record 年份",
+        "GET",
+        "/api/colleges/2954/admissions/summary"
+        "?source_province=浙江&main_year=2025&category=综合&candidate_rank=20000",
+    )
+    no_record_2023 = next(
+        (y for y in (no_record_summary.get("years") or []) if y.get("year") == 2023),
+        {},
+    )
+    expect_true(
+        "学校无事实的全局可比年份不会消失",
+        no_record_2023.get("status") == "no_record"
+        and no_record_2023.get("record_count") == 0
+        and no_record_2023.get("reference_admission") is None,
+        f"2023={no_record_2023}",
+    )
+
+    unavailable_summary = check(
+        "admissions/summary 显式 rank_unavailable",
+        "GET",
+        "/api/colleges/4987/admissions/summary"
+        "?source_province=广东&main_year=2023&category=历史类&candidate_rank=100000",
+    )
+    unavailable_2023 = next(
+        (y for y in (unavailable_summary.get("years") or []) if y.get("year") == 2023),
+        {},
+    )
+    expect_true(
+        "有事实但 min_rank 全空时不伪造代表事实",
+        unavailable_2023.get("status") == "rank_unavailable"
+        and unavailable_2023.get("record_count") == 128
+        and unavailable_2023.get("reference_admission") is None,
+        f"2023={unavailable_2023}",
+    )
+
+    exact_batch_summary = check(
+        "admissions/summary 指定 exact batch",
+        "GET",
+        "/api/colleges/2957/admissions/summary"
+        "?source_province=福建&main_year=2025&category=物理类"
+        "&candidate_rank=50000&batch=专科批",
+    )
+    exact_years = exact_batch_summary.get("years") or []
+    exact_2024 = next((y for y in exact_years if y.get("year") == 2024), {})
+    expect_true(
+        "exact batch 缺失年份返回 no_record，不做批次映射",
+        exact_batch_summary.get("context", {}).get("batch") == "专科批"
+        and exact_2024.get("status") == "no_record",
+        f"2024={exact_2024}",
+    )
+    expect_true(
+        "exact batch 的代表事实均保留实际批次",
+        all(
+            y.get("status") != "reference_available"
+            or (y.get("reference_admission") or {}).get("batch") == "专科批"
+            for y in exact_years
+        ),
+        str([(y.get("year"), (y.get("reference_admission") or {}).get("batch")) for y in exact_years]),
+    )
+
+    tie_summary = check(
+        "admissions/summary 等距 tie-breaker",
+        "GET",
+        "/api/colleges/2960/admissions/summary"
+        "?source_province=内蒙&main_year=2025&category=历史类"
+        "&candidate_rank=124&batch=本科批",
+    )
+    tie_reference = ((tie_summary.get("years") or [{}])[0]).get("reference_admission") or {}
+    expect_true(
+        "等距时按较小 min_rank，再按 admission_id 稳定选择",
+        tie_reference.get("admission_id") == 379212
+        and tie_reference.get("min_rank") == 31
+        and tie_reference.get("rank_gap") == -93,
+        f"reference={tie_reference}",
+    )
+
+    check(
+        "admissions/summary 缺少必填 CandidateProfile 参数 -> 422",
+        "GET",
+        "/api/colleges/4687/admissions/summary?source_province=浙江",
+        expect=422,
+    )
+    check(
+        "admissions/summary candidate_rank 必须为正整数",
+        "GET",
+        "/api/colleges/4687/admissions/summary"
+        "?source_province=浙江&main_year=2025&category=综合&candidate_rank=0",
+        expect=422,
     )
 
     check(

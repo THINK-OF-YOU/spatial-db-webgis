@@ -87,7 +87,7 @@ def get_college(school_id: int) -> dict | None:
 def list_campuses_of(school_id: int) -> list[dict]:
     """某高校的校区点。只返回业务字段，不含 source / transform_method 等内部列。
 
-    **不返回 campus.address**：全表 432 行的 address 全是空串（2026-09-17 实测，
+    **不返回 campus.address**：全表 479 行的 address 全是空串（2026-09-18 实测，
     count(address)=0），返回它只会让前端渲染出一行空白；而且要按「缺失值返回
     null」的口径，空串本身就不该原样给出。契约 §4.3 的字段清单里也没有它。
     """

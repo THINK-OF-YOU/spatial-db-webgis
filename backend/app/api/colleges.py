@@ -7,7 +7,11 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.common import MAX_PAGE_SIZE, paginate
 from app.services import college_service as svc
-from app.services.spatial_service import TRANSPORT_MODES, nearby_transport
+from app.services.spatial_service import (
+    TRANSPORT_MODES,
+    nearby_transport,
+    transport_summary,
+)
 
 router = APIRouter(tags=["college"])
 
@@ -86,5 +90,20 @@ def college_transport(
     return {
         "items": items,
         "total": len(items),
+        "warnings": warnings,
+    }
+
+
+@router.get("/colleges/{school_id}/transport/summary")
+def college_transport_summary(school_id: int):
+    """高校最近交通设施事实摘要。
+
+    metro / rail / airport 各自在有界范围内独立求最近点，距离均为交通设施
+    坐标到最近 Campus 坐标的测地直线距离，不代表步行、驾车或通勤距离。
+    """
+    items, warnings = transport_summary(school_id)
+    return {
+        "school_id": school_id,
+        "items": items,
         "warnings": warnings,
     }
